@@ -430,6 +430,18 @@ const settingsInfo = reactive({ arkApiKeySet: false, arkApiKeyMasked: '' })
 const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
+// 设置页原来是一长条竖着滚下去的表单(9个分组)，改成选项卡分区看着更清楚：
+// 常规(模型服务+剧本生成方式，必填项都在这) / 生成与导出(目录+导出+海报字体) /
+// 提示词与模板(4个自定义提示词分组) / 关于(版本更新)。"保存全部设置"按钮不分tab，
+// 固定在页面底部，切哪个tab都能一次性保存所有字段(后端本来就是整份 PUT)。
+type SettingsTab = 'general' | 'generation' | 'prompts' | 'about'
+const settingsTab = ref<SettingsTab>('general')
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'general', label: '常规' },
+  { id: 'generation', label: '生成与导出' },
+  { id: 'prompts', label: '提示词与模板' },
+  { id: 'about', label: '关于' }
+]
 
 // ---- 设置：剧本生成方式（本机 claude CLI 或第三方 Anthropic Messages API 兼容服务）----
 // 默认 claude_cli，跟后端 Setting.storyGenProvider 的默认值保持一致；只有用户主动
@@ -2348,12 +2360,25 @@ function statusLabel(status: string): string {
     <section v-if="view === 'settings'" class="panel settings-page">
       <button v-if="activeProject" class="back" @click="view = 'project'">← 返回「{{ activeProject.title }}」</button>
       <div class="settings-page-head">
-        <div><h1>设置</h1><p class="hint">模型服务、生成目录和导出偏好</p></div>
+        <div><h1>设置</h1><p class="hint">模型服务、生成与导出偏好、自定义提示词</p></div>
         <span class="settings-state" :class="settingsInfo.arkApiKeySet ? 'ready' : 'missing'">
           {{ settingsInfo.arkApiKeySet ? 'API 已配置' : 'API 未配置' }}
         </span>
       </div>
 
+      <div class="manual-tabs settings-tabs">
+        <button
+          v-for="tab in SETTINGS_TABS"
+          :key="tab.id"
+          class="manual-tab"
+          :class="{ active: settingsTab === tab.id }"
+          @click="settingsTab = tab.id"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+
+      <template v-if="settingsTab === 'about'">
       <section class="settings-group settings-group-update">
       <div class="settings-group-head"><div><h2>版本更新</h2><p>从 GitHub Release 检查并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
       <div class="update-card">
@@ -2378,7 +2403,9 @@ function statusLabel(status: string): string {
         </div>
       </div>
       </section>
+      </template>
 
+      <template v-if="settingsTab === 'general'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head"><div><h2>模型服务</h2><p>生成图片、视频和配音所使用的服务</p></div><span>必填</span></div>
       <div class="field">
@@ -2482,7 +2509,9 @@ function statusLabel(status: string): string {
         </div>
       </template>
       </section>
+      </template>
 
+      <template v-if="settingsTab === 'generation'">
       <section class="settings-group">
       <div class="settings-group-head"><div><h2>生成目录</h2><p>角色图、场景图、分镜图片、视频和配音文件</p></div><span>可选</span></div>
       <div class="field">
@@ -2538,7 +2567,9 @@ function statusLabel(status: string): string {
         </p>
       </div>
       </section>
+      </template>
 
+      <template v-if="settingsTab === 'prompts'">
       <section class="settings-group">
       <div class="settings-group-head"><div><h2>出图风格前缀</h2><p>每次生图自动加在 prompt 最前面的一句话，按出图风格分别覆盖，留空的风格用默认值</p></div><span>可选</span></div>
       <div class="field" v-for="mode in (['comic', 'realistic', 'render3d', 'freeform'] as StyleMode[])" :key="`prefix-${mode}`">
@@ -2588,6 +2619,7 @@ function statusLabel(status: string): string {
       </div>
       <button class="ghost" @click="addCustomProjectTemplateRow">+ 添加一张模板卡片</button>
       </section>
+      </template>
 
       <div class="settings-actions">
         <div><strong>保存设置</strong><span v-if="settingsSavedAt" class="hint">上次保存：{{ settingsSavedAt }}</span><p v-if="settingsError" class="error">保存失败：{{ settingsError }}</p></div>
@@ -4993,7 +5025,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
 }
 .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
-.ui-v2 .settings-group-primary, .ui-v2 .settings-actions { grid-column: 1 / -1; }
+.ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
+.ui-v2 .settings-tabs { grid-column: 1 / -1; }
+.ui-v2 .settings-tabs { margin-bottom: 2px; }
 .ui-v2 .settings-page > .back { justify-self: start; margin-bottom: -4px; }
 .ui-v2 .settings-page-head {
   padding-bottom: 14px; border-bottom: 1px solid #e4e4e7;
@@ -5333,7 +5367,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   .ui-v2 .consistency-item-wide { grid-column: auto; }
   .ui-v2 .settings-page { grid-template-columns: 1fr; }
   .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
-  .ui-v2 .settings-group-primary, .ui-v2 .settings-actions { grid-column: auto; }
+  .ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
+  .ui-v2 .settings-tabs { grid-column: auto; }
   .ui-v2 .settings-actions { align-items: stretch; flex-direction: column; }
   .ui-v2 .update-card { align-items: stretch; flex-direction: column; }
   .ui-v2 .update-actions { justify-content: flex-start; }
