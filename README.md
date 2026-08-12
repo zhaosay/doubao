@@ -122,6 +122,33 @@ npm run build:win
 > 真正意义上的"零依赖安装包"可以再把 ffmpeg 的 Windows 版可执行文件也塞进
 > `resources/` 里，让代码优先找这个路径。
 
+## 分发给朋友（GitHub Release）
+
+想让朋友直接下载安装包用，不用自己配环境，可以走 GitHub Release：
+
+1. 在 GitHub 建一个仓库，把这份代码 push 上去（仓库设成 Public，朋友才能不登录
+   GitHub 账号直接下载；设成 Private 的话朋友得先被加成协作者）。
+2. 打一个版本 tag 并 push：
+   ```
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. 仓库里的 `.github/workflows/build-windows.yml` 会自动在 GitHub 提供的真实
+   Windows 环境里跑一次 `npm run build:win`，比在 macOS/Linux 上交叉编译更可靠
+   （不会碰到 NSIS 需要 Wine、arm64 主机没有 x64 NSIS 二进制这些问题，产出的是
+   真正能双击安装、带开始菜单快捷方式的 `.exe`）。跑完会自动创建一个跟 tag 同名
+   的 Release，把 `.exe` 和免安装的 `.zip` 都挂上去。
+4. 朋友去仓库的 **Releases** 页面，下载 `.exe` 双击安装即可（还是需要自己装
+   `ffmpeg`，见下面「系统依赖」；剧本生成功能需要本机装 Claude Code 并登录，
+   海报/图片/视频生成需要填自己的 Ark API Key）。
+
+不想等 push tag，只想验证"打包到底能不能过"，去仓库的 **Actions** 页面手动点
+`Run workflow` 也能跑一次，产物在这次运行的 Artifacts 里下载，不会创建 Release。
+
+> 秘钥安全：Ark API Key / IndexTTS 地址这些都存在本地的 `data/app.db` 里，
+> `.gitignore` 已经把这个文件排除在外，不会被 push 上去；仓库里没有任何写死的
+> 密钥。每个用户（包括你朋友）安装后都要在应用的「设置」页自己填一遍 Ark API Key。
+
 ## 系统依赖
 
 - **ffmpeg / ffprobe**：导出成片（拼接视频+烧字幕）会调本机命令行的 `ffmpeg`/
