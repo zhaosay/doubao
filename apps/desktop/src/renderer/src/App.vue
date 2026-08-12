@@ -17,6 +17,7 @@ interface AiManjuBridge {
   apiBaseUrl: string
   openPath?: (filePath: string) => Promise<string>
   pickImageFile?: () => Promise<{ path: string; dataUrl: string | null } | null>
+  readImagePreview?: (filePath: string) => Promise<string | null>
 }
 
 const aiManjuBridge = (window as unknown as { aiManju?: AiManjuBridge }).aiManju
@@ -49,34 +50,73 @@ async function openInSystemViewer(filePath: string | null | undefined): Promise<
 // 按钮，走 Electron 原生选择框，选完直接把绝对路径填回输入框——multiple=true 时是追加
 // (逗号分隔，支持传多张参考图)，false 时是覆盖(起始帧这类单路径字段)。
 //
-// 选完只看到一串路径文字，不知道到底选没选对图，所以主进程选完顺带把文件读成 data URI
-// 一起传回来，这里存进 filePreviewByKey 给旁边的 <img> 当预览用——previewKey 由调用方
-// 传一个能区分"是哪个字段"的字符串(比如 `scene-ref:${scene.id}`)，因为同一个 shot.id
-// 在画面参考图/视频起始帧两处是共用的，光用 key(=shot.id) 区分不开是哪个字段的预览。
-// multiple=true 时只保留"最近一次选的这张"的预览，不维护一整个历史缩略图列表，
-// 用户主要是想确认"我刚选的这张对不对"，不是要看完整历史。
-const filePreviewByKey = reactive<Record<string, string>>({})
+// 预览图缓存按"文件路径"本身当 key(不是按字段名)：一开始按 previewKey(字段名)存，
+// 只有刚选完文件那一刻有预览，页面刷新/重新打开项目/切换 tab 之后，路径还在但预览图
+// 没了——因为渲染进程手里只剩一串本地绝对路径字符串，跟主进程刚选完文件时顺带传回来的
+// data URI 早就对不上了，看起来就是"上传的图片不显示"。改成按路径缓存之后，只要
+// 拿到一个路径(不管是刚选的还是从后端读出来的旧数据)，都能按需去问主进程要预览图，
+// 而且同一个文件在不同字段里出现也只用读一次盘。
+const pathPreviewCache = reactive<Record<string, string | null>>({})
+const pathPreviewRequested = new Set<string>()
 
-async function pickReferenceFile(
-  record: Record<string, string>,
-  key: string,
-  multiple: boolean,
-  previewKey: string
-): Promise<void> {
+// 只在缓存里没有、也还没发起过请求时才去问主进程要——避免同一个路径在列表滚动/
+// 每次渲染时被反复调用导致重复 IPC。请求失败/环境不支持(比如浏览器里调试)就记 null，
+// 模板那边会显示"预览不可用"而不是一直转圈。
+function ensurePathPreview(path: string | null | undefined): void {
+  if (!path || path in pathPreviewCache || pathPreviewRequested.has(path)) return
+  pathPreviewRequested.add(path)
+  if (!aiManjuBridge?.readImagePreview) {
+    pathPreviewCache[path] = null
+    return
+  }
+  aiManjuBridge
+    .readImagePreview(path)
+    .then((dataUrl) => {
+      pathPreviewCache[path] = dataUrl
+    })
+    .catch(() => {
+      pathPreviewCache[path] = null
+    })
+}
+
+// 模板里直接调用：命中缓存就同步返回，没命中就顺便触发一次异步加载(等结果回来
+// 触发 pathPreviewCache 的响应式更新，下一轮渲染自然就有了)，调用方不用关心加载时序。
+function pathPreview(path: string | null | undefined): string | null {
+  if (!path) return null
+  ensurePathPreview(path)
+  return pathPreviewCache[path] ?? null
+}
+
+function splitPaths(raw: string | null | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)
+}
+
+// 多参考图字段(逗号分隔多个路径)用：拆开之后每个路径各自去拿预览图，只保留已经
+// 加载出来的——正在加载/加载失败的那几张不占位置，不会在缩略图行里留一堆空白框。
+function previewEntries(raw: string | null | undefined): { path: string; preview: string }[] {
+  return splitPaths(raw)
+    .map((path) => ({ path, preview: pathPreview(path) }))
+    .filter((entry): entry is { path: string; preview: string } => !!entry.preview)
+}
+
+async function pickReferenceFile(record: Record<string, string>, key: string, multiple: boolean): Promise<void> {
   if (!aiManjuBridge?.pickImageFile) {
     openFileError.value = '当前环境不支持选择本地文件（仅桌面 app 内可用），可以手动粘贴文件路径'
     return
   }
   const picked = await aiManjuBridge.pickImageFile()
   if (!picked) return
+  // 主进程选完文件时已经顺手读出了 data URI，直接拿来填缓存，不用再让 ensurePathPreview
+  // 多问主进程读一次盘。
+  pathPreviewCache[picked.path] = picked.dataUrl
   if (multiple) {
     const current = (record[key] ?? '').trim()
     record[key] = current ? `${current},${picked.path}` : picked.path
   } else {
     record[key] = picked.path
-  }
-  if (picked.dataUrl) {
-    filePreviewByKey[previewKey] = picked.dataUrl
   }
 }
 
@@ -482,7 +522,7 @@ const posterForm = reactive({
   extraPrompt: ''
 })
 // 参考图路径单独用一个 Record<string,string>，跟 sceneRefImagePathsInput 同一个模式，
-// 这样能直接复用现成的 pickReferenceFile(record, key, multiple, previewKey) 选择文件逻辑，
+// 这样能直接复用现成的 pickReferenceFile(record, key, multiple) 选择文件逻辑，
 // 不用给 posterForm 整个对象额外声明索引签名。key 固定叫 'new'，因为创建表单只有一份。
 const posterRefPathInput = reactive<Record<string, string>>({ new: '' })
 const creatingPoster = ref(false)
@@ -518,8 +558,8 @@ function bodyLinesFromText(text: string): string[] {
 const videoGenList = ref<VideoGenerationItem[]>([])
 const videoGenTab = ref<'list' | 'create'>('list')
 const videoGenForm = reactive({ prompt: '' })
-// 复用 pickReferenceFile(record, key, multiple, previewKey)，key 固定叫 'new'，
-// 跟 posterRefPathInput 同一个模式；single=false 因为图生视频只需要一张起始帧参考图。
+// 复用 pickReferenceFile(record, key, multiple)，key 固定叫 'new'，
+// 跟 posterRefPathInput 同一个模式；multiple=false 因为图生视频只需要一张起始帧参考图。
 const videoGenRefPathInput = reactive<Record<string, string>>({ new: '' })
 const creatingVideoGen = ref(false)
 const videoGenError = ref<string | null>(null)
@@ -539,6 +579,10 @@ const textImageRefPathInput = reactive<Record<string, string>>({ new: '' })
 const creatingTextImage = ref(false)
 const textImageError = ref<string | null>(null)
 const regeneratingTextImage = reactive<Record<string, boolean>>({})
+const textImagePromptPreview = computed(() => textImageForm.prompt.trim() || '夜晚城市天台，霓虹灯背景，一只猫坐在栏杆上')
+const textImageOrientationLabel = computed(() => {
+  return textImageOrientations.value.find((o) => o.id === textImageForm.orientation)?.label ?? '竖版'
+})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -874,7 +918,6 @@ async function createPoster(): Promise<void> {
     posterForm.promptText = ''
     posterForm.bodyLinesText = ''
     posterRefPathInput.new = ''
-    delete filePreviewByKey['poster-ref:new']
     postersTab.value = 'list'
     await loadPosters()
   } catch (err) {
@@ -985,7 +1028,6 @@ async function createVideoGeneration(): Promise<void> {
     })
     videoGenForm.prompt = ''
     videoGenRefPathInput.new = ''
-    delete filePreviewByKey['video-gen-ref:new']
     videoGenTab.value = 'list'
     await loadVideoGenerations()
   } catch (err) {
@@ -1047,7 +1089,6 @@ async function createTextImage(): Promise<void> {
     })
     textImageForm.prompt = ''
     textImageRefPathInput.new = ''
-    delete filePreviewByKey['text-image-ref:new']
     textImagesTab.value = 'list'
     await loadTextImages()
   } catch (err) {
@@ -2571,9 +2612,17 @@ function statusLabel(status: string): string {
                 <label>参考图<span class="field-badge">可选</span></label>
                 <div class="ref-path-row">
                   <input v-model="posterRefPathInput.new" placeholder="本地图片路径，留空纯文生图" />
-                  <button class="ghost" @click="pickReferenceFile(posterRefPathInput, 'new', true, 'poster-ref:new')">选择文件…</button>
+                  <button class="ghost" @click="pickReferenceFile(posterRefPathInput, 'new', true)">选择文件…</button>
                 </div>
-                <img v-if="filePreviewByKey['poster-ref:new']" class="ref-pick-preview" :src="filePreviewByKey['poster-ref:new']" />
+                <div class="ref-preview-row">
+                  <img
+                    v-for="entry in previewEntries(posterRefPathInput.new)"
+                    :key="entry.path"
+                    class="ref-pick-preview"
+                    :src="entry.preview"
+                    :title="entry.path"
+                  />
+                </div>
               </div>
             </div>
           </details>
@@ -2674,9 +2723,13 @@ function statusLabel(status: string): string {
             <label>参考图<span class="field-badge">必填</span></label>
             <div class="ref-path-row">
               <input v-model="videoGenRefPathInput.new" placeholder="本地图片路径" />
-              <button class="ghost" @click="pickReferenceFile(videoGenRefPathInput, 'new', false, 'video-gen-ref:new')">选择文件…</button>
+              <button class="ghost" @click="pickReferenceFile(videoGenRefPathInput, 'new', false)">选择文件…</button>
             </div>
-            <img v-if="filePreviewByKey['video-gen-ref:new']" class="ref-pick-preview" :src="filePreviewByKey['video-gen-ref:new']" />
+            <img
+              v-if="pathPreview(videoGenRefPathInput.new)"
+              class="ref-pick-preview"
+              :src="pathPreview(videoGenRefPathInput.new) ?? ''"
+            />
           </div>
         </section>
 
@@ -2732,7 +2785,7 @@ function statusLabel(status: string): string {
 
     <!-- 文生图：独立的一级功能，写一段描述直接出图，不做标题文字合成，跟海报共用
          出图风格(styleMode)和画幅(orientation)概念。 -->
-    <section v-else-if="view === 'textImages'" class="panel posters-page">
+    <section v-else-if="view === 'textImages'" class="panel posters-page text-images-page">
       <div class="projects-page-head">
         <div>
           <h1>{{ textImagesTab === 'create' ? '新建文生图' : '文生图列表' }}</h1>
@@ -2742,41 +2795,70 @@ function statusLabel(status: string): string {
       </div>
 
       <template v-if="textImagesTab === 'create'">
-        <section class="poster-form-section">
-          <div class="poster-step-head"><span>1</span><div><strong>画面描述</strong><small>喂给 Seedream 的提示词</small></div></div>
-          <div class="field">
-            <textarea v-model="textImageForm.prompt" rows="4" placeholder="比如：夜晚城市天台，霓虹灯背景，一只猫坐在栏杆上" />
-          </div>
-          <div class="field">
-            <label>画布方向</label>
-            <div class="poster-orientation-picker">
-              <label v-for="o in textImageOrientations" :key="o.id">
-                <input type="radio" :value="o.id" v-model="textImageForm.orientation" /> {{ o.label }}
-              </label>
+        <div class="text-image-create-panel">
+          <section class="text-image-form-card">
+            <div class="poster-step-head"><span>1</span><div><strong>画面描述</strong><small>喂给 Seedream 的提示词</small></div></div>
+            <div class="field text-image-prompt-field">
+              <label>提示词</label>
+              <textarea v-model="textImageForm.prompt" rows="7" placeholder="比如：夜晚城市天台，霓虹灯背景，一只猫坐在栏杆上，电影感，雨后反光地面" />
+              <p class="field-help">只描述画面本身。不要在这里写标题文字；这条功能会直接输出 AI 原图。</p>
             </div>
-          </div>
-          <div class="style-mode-picker">
-            <span class="style-mode-label">出图风格</span>
-            <label><input type="radio" value="comic" v-model="textImageForm.styleMode" /> 漫画风</label>
-            <label><input type="radio" value="realistic" v-model="textImageForm.styleMode" /> 真人风</label>
-            <label><input type="radio" value="render3d" v-model="textImageForm.styleMode" /> 3D风</label>
-            <label><input type="radio" value="freeform" v-model="textImageForm.styleMode" /> AI自由发挥</label>
-          </div>
-          <div class="field">
-            <label>参考图<span class="field-badge">可选，传了就是图生图</span></label>
-            <div class="ref-path-row">
-              <input v-model="textImageRefPathInput.new" placeholder="本地图片路径，留空纯文生图" />
-              <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'new', true, 'text-image-ref:new')">选择文件…</button>
-            </div>
-            <img v-if="filePreviewByKey['text-image-ref:new']" class="ref-pick-preview" :src="filePreviewByKey['text-image-ref:new']" />
-          </div>
-        </section>
 
-        <div class="poster-create-actions">
-          <div><strong>准备生成</strong><span>生成结果就是 AI 出的原图，不做二次加工</span><p v-if="textImageError" class="error">{{ textImageError }}</p></div>
-          <button :disabled="creatingTextImage || !textImageForm.prompt.trim()" @click="createTextImage">
-            {{ creatingTextImage ? '生成中…' : '生成图片' }}
-          </button>
+            <div class="text-image-options-grid">
+              <div class="field">
+                <label>画布方向</label>
+                <div class="poster-orientation-picker text-image-choice-row">
+                  <label v-for="o in textImageOrientations" :key="o.id">
+                    <input type="radio" :value="o.id" v-model="textImageForm.orientation" /> {{ o.label }}
+                  </label>
+                </div>
+              </div>
+              <div class="field">
+                <label>出图风格</label>
+                <div class="style-mode-picker text-image-choice-row">
+                  <label><input type="radio" value="comic" v-model="textImageForm.styleMode" /> 漫画风</label>
+                  <label><input type="radio" value="realistic" v-model="textImageForm.styleMode" /> 真人风</label>
+                  <label><input type="radio" value="render3d" v-model="textImageForm.styleMode" /> 3D风</label>
+                  <label><input type="radio" value="freeform" v-model="textImageForm.styleMode" /> AI自由发挥</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>参考图<span class="field-badge">可选，多张用逗号分隔</span></label>
+              <div class="ref-path-row text-image-ref-row">
+                <input v-model="textImageRefPathInput.new" placeholder="本地图片路径；留空就是纯文生图" />
+                <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'new', true)">选择文件…</button>
+              </div>
+              <div v-if="previewEntries(textImageRefPathInput.new).length" class="text-image-ref-preview-wrap">
+                <img
+                  v-for="entry in previewEntries(textImageRefPathInput.new)"
+                  :key="entry.path"
+                  class="ref-pick-preview text-image-ref-preview"
+                  :src="entry.preview"
+                  :title="entry.path"
+                />
+                <span>已选择 {{ splitPaths(textImageRefPathInput.new).length }} 张参考图</span>
+              </div>
+            </div>
+          </section>
+
+          <aside class="text-image-preview-panel">
+            <div class="poster-preview-head">
+              <strong>出图预览</strong>
+              <span>{{ textImageOrientationLabel }} · {{ styleModeLabels[textImageForm.styleMode] }}</span>
+            </div>
+            <div class="text-image-preview-canvas" :class="`orientation-${textImageForm.orientation}`">
+              <div class="text-image-preview-bg"></div>
+              <p>{{ textImagePromptPreview }}</p>
+            </div>
+            <div class="poster-create-actions text-image-create-actions">
+              <div><strong>准备生成</strong><span>生成结果就是 AI 原图，不做标题合成</span><p v-if="textImageError" class="error">{{ textImageError }}</p></div>
+              <button :disabled="creatingTextImage || !textImageForm.prompt.trim()" @click="createTextImage">
+                {{ creatingTextImage ? '生成中…' : '生成图片' }}
+              </button>
+            </div>
+          </aside>
         </div>
       </template>
 
@@ -2784,14 +2866,15 @@ function statusLabel(status: string): string {
         <p v-if="textImages.length === 0" class="hint">
           还没有生成过图片，先切到「新建文生图」创建一个吧（如果你确定之前生成过，点"刷新列表"再看看）
         </p>
-        <div class="poster-grid">
-          <div v-for="item in textImages" :key="item.id" class="poster-card">
-            <div class="poster-card-media" :class="statusColorClass(item.status)">
+        <div class="poster-grid text-image-grid">
+          <div v-for="item in textImages" :key="item.id" class="poster-card text-image-card">
+            <div class="poster-card-media text-image-card-media" :class="[statusColorClass(item.status), `orientation-${item.orientation}`]">
               <img v-if="item.url" :src="`${apiBaseUrl}${item.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(item.filePath)" />
               <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
             </div>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
+                <span class="tag tag-style-mode">{{ styleModeLabels[item.styleMode] }}</span>
                 <span class="tag">{{ item.orientationLabel }}</span>
                 <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
               </div>
@@ -3167,7 +3250,11 @@ function statusLabel(status: string): string {
                     <span class="scene-ref-media-tag">生成图</span>
                   </div>
                   <div class="scene-ref-preview scene-ref-upload-preview">
-                    <img v-if="filePreviewByKey[`scene-ref:${scene.id}`]" :src="filePreviewByKey[`scene-ref:${scene.id}`]" title="刚选的这张参考图" />
+                    <img
+                      v-if="pathPreview(splitPaths(sceneRefImagePathsInput[scene.id]).slice(-1)[0])"
+                      :src="pathPreview(splitPaths(sceneRefImagePathsInput[scene.id]).slice(-1)[0]) ?? ''"
+                      title="最近选的这张参考图"
+                    />
                     <div v-else class="scene-ref-placeholder">暂无参考图</div>
                     <span class="scene-ref-media-tag">上传的参考图</span>
                   </div>
@@ -3184,7 +3271,7 @@ function statusLabel(status: string): string {
                       v-model="sceneRefImagePathsInput[scene.id]"
                       placeholder="参考图本地路径，留空纯文生图（图生图更贴合已有场地照片/参考画面）"
                     />
-                    <button class="ghost" @click="pickReferenceFile(sceneRefImagePathsInput, scene.id, true, `scene-ref:${scene.id}`)">选择文件…</button>
+                    <button class="ghost" @click="pickReferenceFile(sceneRefImagePathsInput, scene.id, true)">选择文件…</button>
                   </div>
                   <div class="scene-ref-actions">
                     <button :disabled="generatingScene[scene.id] || scene.status === 'running'" @click="generateScene(scene.id)">
@@ -3382,16 +3469,27 @@ function statusLabel(status: string): string {
                             <label>画面参考图</label>
                             <div class="ref-path-row">
                               <input v-model="refImagePathsInput[shot.id]" placeholder="留空时自动使用角色设定图和场景母版图" />
-                              <img v-if="filePreviewByKey[`shot-ref:${shot.id}`]" class="ref-pick-preview" :src="filePreviewByKey[`shot-ref:${shot.id}`]" title="刚选的这张图" />
-                              <button class="ghost" @click="pickReferenceFile(refImagePathsInput, shot.id, true, `shot-ref:${shot.id}`)">选择文件…</button>
+                              <img
+                                v-for="entry in previewEntries(refImagePathsInput[shot.id])"
+                                :key="entry.path"
+                                class="ref-pick-preview"
+                                :src="entry.preview"
+                                :title="entry.path"
+                              />
+                              <button class="ghost" @click="pickReferenceFile(refImagePathsInput, shot.id, true)">选择文件…</button>
                             </div>
                           </div>
                           <div class="consistency-item consistency-item-wide">
                             <label>视频起始帧</label>
                             <div class="ref-path-row">
                               <input v-model="startImagePathInput[shot.id]" placeholder="留空时自动使用当前镜头已选中的分镜图片" />
-                              <img v-if="filePreviewByKey[`shot-start:${shot.id}`]" class="ref-pick-preview" :src="filePreviewByKey[`shot-start:${shot.id}`]" title="刚选的这张图" />
-                              <button class="ghost" @click="pickReferenceFile(startImagePathInput, shot.id, false, `shot-start:${shot.id}`)">选择文件…</button>
+                              <img
+                                v-if="pathPreview(startImagePathInput[shot.id])"
+                                class="ref-pick-preview"
+                                :src="pathPreview(startImagePathInput[shot.id]) ?? ''"
+                                title="视频起始帧参考图"
+                              />
+                              <button class="ghost" @click="pickReferenceFile(startImagePathInput, shot.id, false)">选择文件…</button>
                             </div>
                           </div>
                         </div>
@@ -4165,6 +4263,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ref-pick-preview { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; border: 1px solid #e4e4e7; flex-shrink: 0; }
 .ref-path-row input { flex: 1; min-width: 0; }
 .ref-path-row button { flex-shrink: 0; }
+.ref-preview-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.ref-preview-row .ref-pick-preview { width: 44px; height: 44px; }
 .manual-inline-select {
   margin-top: 4px; font-size: 12px; color: #52525b; background: #fafafa;
   border: 1px dashed #d4d4d8; padding: 4px 6px;
@@ -4304,6 +4404,44 @@ button:disabled { opacity: 0.5; cursor: default; }
 .poster-card-title-row { display: flex; align-items: center; gap: 6px; }
 .poster-card-title-row .tag { margin-left: 0; }
 .poster-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.text-image-create-panel { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.text-image-form-card {
+  padding: 16px; border: 1px solid #e4e4e7; border-radius: 13px; background: white;
+}
+.text-image-prompt-field textarea { min-height: 150px; resize: vertical; line-height: 1.55; }
+.text-image-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.text-image-choice-row { align-items: center; flex-wrap: wrap; gap: 8px; }
+.text-image-ref-preview-wrap {
+  display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 6px 8px;
+  border: 1px solid #e4e4e7; border-radius: 9px; background: #fafafa; color: #71717a; font-size: 12px;
+}
+.text-image-ref-preview { width: 52px; height: 52px; }
+.text-image-preview-panel {
+  position: sticky; top: 16px; display: flex; flex-direction: column; gap: 12px;
+  padding: 15px; border: 1px solid #e4e4e7; border-radius: 13px; background: #fbfbfd;
+}
+.text-image-preview-canvas {
+  position: relative; display: grid; place-items: end start; width: 100%; aspect-ratio: 3 / 4;
+  overflow: hidden; border-radius: 12px; padding: 18px; box-sizing: border-box; background: #111827; color: white;
+}
+.text-image-preview-canvas.orientation-landscape { aspect-ratio: 4 / 3; }
+.text-image-preview-bg {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, .55), transparent 30%),
+    radial-gradient(circle at 76% 28%, rgba(251, 191, 36, .48), transparent 26%),
+    linear-gradient(145deg, #111827, #334155 52%, #0f172a);
+}
+.text-image-preview-canvas p {
+  position: relative; margin: 0; max-width: 90%; color: rgba(255,255,255,.9);
+  font-size: 12px; line-height: 1.55; text-shadow: 0 1px 8px rgba(0,0,0,.45);
+  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 6;
+}
+.text-image-create-actions { margin: 0; flex-direction: column; align-items: stretch; }
+.text-image-create-actions button { width: 100%; }
+.text-image-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.text-image-card-media.orientation-landscape { aspect-ratio: 4 / 3; }
+.text-image-card-media img { object-fit: contain; background: #111827; }
 .export-box video { max-width: 100%; margin-top: 8px; border-radius: 6px; }
 
 /* 响应式：窗口窄的时候（Electron 窗口拖小、或者笔记本小屏幕）几个并排布局会挤得
@@ -4533,6 +4671,20 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .poster-preview-copy span { font-size: 11px; }
 .ui-v2 .poster-preview-copy ul { margin: 5px 0 0; padding-left: 17px; font-size: 10px; }
 .ui-v2 .poster-preview-panel > p { margin: 10px 0 0; color: #8a8a90; font-size: 11px; line-height: 1.5; }
+.ui-v2 .text-images-page { max-width: 1240px; }
+.ui-v2 .text-image-form-card .field { margin-bottom: 16px; gap: 7px; }
+.ui-v2 .text-image-form-card .field:last-child { margin-bottom: 0; }
+.ui-v2 .text-image-form-card .field > label { font-weight: 650; color: #27272a; }
+.ui-v2 .text-image-choice-row label {
+  display: inline-flex; flex-direction: row; align-items: center; gap: 6px;
+  width: max-content; min-width: max-content; min-height: 36px; padding: 7px 10px;
+  border: 1px solid #e4e4e7; border-radius: 9px; background: #fbfbfd; white-space: nowrap;
+}
+.ui-v2 .text-image-choice-row input { width: 14px; height: 14px; margin: 0; }
+.ui-v2 .text-image-ref-row { align-items: stretch; }
+.ui-v2 .text-image-ref-row button { min-height: 38px; }
+.ui-v2 .text-image-card { border-radius: 13px; }
+.ui-v2 .text-image-card .poster-card-title-row { flex-wrap: wrap; }
 .ui-v2 .story-command-panel {
   padding: 16px; margin-bottom: 14px; border: 1px solid #e4e4e7; border-radius: 13px; background: #fbfbfd;
 }

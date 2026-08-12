@@ -146,6 +146,19 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.bmp': 'image/bmp'
 }
 
+// 读本地图片文件转成 data URI，pick-image-file(刚选完的那张)和 read-image-preview
+// (回显已经存在的路径，比如上次生成/上次保存的参考图)共用同一份逻辑。
+function readImageAsDataUrl(filePath: string): string | null {
+  try {
+    const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+    const base64 = readFileSync(filePath).toString('base64')
+    return `data:${mime};base64,${base64}`
+  } catch (err) {
+    console.error(`[readImageAsDataUrl] 读文件失败(${filePath}):`, err)
+    return null
+  }
+}
+
 // 参考图"上传"本质是"选一个本机已有的文件"：原生系统选择框选完直接拿到绝对路径，
 // 不用真的把文件字节传进渲染进程再落盘一份。用户自己在系统对话框里选，不算渲染进程
 // 拿到了额外的文件系统权限，跟 open-path 一样是"用户主动触发的窄接口"。
@@ -164,15 +177,18 @@ ipcMain.handle('pick-image-file', async () => {
   })
   if (result.canceled || result.filePaths.length === 0) return null
   const filePath = result.filePaths[0]
-  try {
-    const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
-    const base64 = readFileSync(filePath).toString('base64')
-    return { path: filePath, dataUrl: `data:${mime};base64,${base64}` }
-  } catch (err) {
-    // 读文件失败(权限/文件太大之类)不阻塞流程，路径照样有用，只是没有预览图。
-    console.error('[pick-image-file] 读文件生成预览失败:', err)
-    return { path: filePath, dataUrl: null }
-  }
+  return { path: filePath, dataUrl: readImageAsDataUrl(filePath) }
+})
+
+// 上面那个只在"刚选完文件"那一刻返回预览图——之前的问题是：参考图路径存进后端之后，
+// 页面刷新/重新打开项目/切到文生图列表页，渲染进程手里只剩下一串本地绝对路径字符串，
+// 没有配套的 data URI，预览区就是空的，看起来像"上传的图片不显示"。这个接口给已经
+// 存在的路径补一次回显：传路径进来，读文件转 data URI 回去，跟 pick-image-file
+// 是同一份读取逻辑，只是不弹选择框。路径不存在/读取失败时返回 null，渲染进程会
+// 显示"预览不可用"而不是报错崩掉。
+ipcMain.handle('read-image-preview', async (_event, filePath: string) => {
+  if (!filePath || !existsSync(filePath)) return null
+  return readImageAsDataUrl(filePath)
 })
 
 app.whenReady().then(() => {
