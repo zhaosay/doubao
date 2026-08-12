@@ -8,7 +8,8 @@
     "build": "electron-vite build",
     "build:win": "electron-vite build && electron-builder --win",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev --name init"
+    "prisma:migrate": "prisma migrate dev --name init",
+    "build:mac": "electron-vite build && electron-builder --mac"
   },
   "dependencies": {
     "@lucide/vue": "^1.31.0",
@@ -76,6 +77,25 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "electronVersion": "31.7.7"
+    "electronVersion": "31.7.7",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null
+    }
   }
 }

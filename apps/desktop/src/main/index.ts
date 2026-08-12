@@ -51,21 +51,21 @@ function ensureUserDataDb(dbPath: string): void {
 }
 
 function resolveAiServiceRuntime(): AiServiceRuntime {
-  // 打包模式(目前只有 Windows 真正打了内置 Python 运行时进去)：不依赖用户机器上
-  // 装没装 Python，用打包进 resources/python-win 的内嵌 Python 解释器 +
-  // 提前下载好的 win_amd64 依赖包；ai-service 源码也是打包进 resources/ai-service
-  // 的一份拷贝，不是从 npm 包里的源码目录读。
-  if (app.isPackaged && process.platform === 'win32') {
+  // 打包模式：ai-service 源码和种子数据库都来自安装包内的 resources，用户数据放到
+  // app.getPath('userData')，避免写安装目录。Windows 额外内置了 python-win；macOS
+  // 暂时使用用户机器上的 python3，因此需要先安装 requirements.txt 里的 Python 依赖。
+  if (app.isPackaged) {
     const aiServiceDir = join(process.resourcesPath, 'ai-service')
-    const pythonBin = join(process.resourcesPath, 'python-win', 'python.exe')
+    const pythonBin = process.platform === 'win32'
+      ? join(process.resourcesPath, 'python-win', 'python.exe')
+      : resolvePythonBin(aiServiceDir)
     const dbPath = join(app.getPath('userData'), 'app.db')
     const outputRoot = join(app.getPath('userData'), 'output')
     ensureUserDataDb(dbPath)
     return { pythonBin, aiServiceDir, extraEnv: { AI_MANJU_DB_PATH: dbPath, AI_MANJU_OUTPUT_ROOT: outputRoot } }
   }
 
-  // 开发模式（或者还没打包内置运行时的其它平台）：走原来的仓库相对路径 + venv，
-  // 行为完全不变。
+  // 开发模式：走原来的仓库相对路径 + venv，行为完全不变。
   const aiServiceDir = resolveAiServiceDir()
   return { pythonBin: resolvePythonBin(aiServiceDir), aiServiceDir, extraEnv: {} }
 }
