@@ -1,0 +1,56 @@
+name: Build Windows installer
+
+# 触发方式：
+# 1) push 一个 v 开头的 tag（比如 v0.1.0）—— 会自动创建/更新一个 GitHub Release，
+#    把打好的安装包(.exe)和免安装包(.zip)挂上去，朋友直接去 Release 页面下载。
+# 2) 手动触发(Actions 页面点 "Run workflow")—— 只产出构建产物(Artifacts)，
+#    不发 Release，方便平时改完代码想验证"打包到底能不能过"而不想发版。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # 需要这个权限才能在 push tag 时自动创建 Release
+
+jobs:
+  build:
+    # 关键：用真正的 Windows 跑，避免本地 macOS/Linux 交叉编译时 NSIS/Wine 的一堆坑
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖（仓库根目录，npm workspaces）
+        run: npm ci
+
+      - name: 前端类型检查（vue-tsc）
+        run: npx vue-tsc --noEmit -p tsconfig.web.json
+        working-directory: apps/desktop
+
+      - name: 打包 Windows 安装包（真正的 Windows 环境，产出真实 NSIS .exe）
+        run: npm run build:win
+        working-directory: apps/desktop
+
+      - name: 上传构建产物（每次运行都会有，方便调试）
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.zip
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release（只在 push tag 时触发）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.zip
+          generate_release_notes: true
