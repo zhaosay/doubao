@@ -218,8 +218,13 @@ model TextImage {
   prompt    String
   orientation String @default("portrait") // portrait(竖版) | landscape(横版)，跟海报同一套
   styleMode String   @default("comic")
-  // 逗号分隔的本地参考图路径，可选——不传就是纯文生图，传了就是图生图(风格/构图参考)。
+  // 老字段(早期版本用)：逗号分隔、不分类的本地参考图路径。上线 character/scene 两个
+  // 字段之后新建的记录不再往这里写，只是保留兼容老数据，生成时仍会读它做兜底。
   referenceImagePaths String?
+  // 角色参考图：想让画面里的人物长相/穿着贴近这几张图，逗号分隔的本地路径，可选。
+  characterReferenceImagePaths String?
+  // 环境参考图：想让画面的场景/背景/光线贴近这几张图，逗号分隔的本地路径，可选。
+  sceneReferenceImagePaths String?
   filePath  String?
   status    String   @default("pending") // pending | running | completed | failed
   error     String?

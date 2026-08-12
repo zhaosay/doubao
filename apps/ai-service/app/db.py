@@ -431,6 +431,8 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
     if "TextImage" not in tables:
         # 独立文生图：同样不挂在 Project 下，纯"写描述 -> 出图"，跟海报共用出图风格
         # 前缀(styleMode)和画幅(orientation)概念，但不做标题文字合成。
+        # referenceImagePaths 是老字段(不分类的参考图，早期版本用)，character/scene
+        # 两个新字段上线后新建的记录不再往这个老字段写，只是保留兼容老数据。
         conn.execute(
             """
             CREATE TABLE "TextImage" (
@@ -440,6 +442,8 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
                 "orientation" TEXT NOT NULL DEFAULT 'portrait',
                 "styleMode" TEXT NOT NULL DEFAULT 'comic',
                 "referenceImagePaths" TEXT,
+                "characterReferenceImagePaths" TEXT,
+                "sceneReferenceImagePaths" TEXT,
                 "filePath" TEXT,
                 "status" TEXT NOT NULL DEFAULT 'pending',
                 "error" TEXT,
@@ -452,6 +456,17 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         )
         conn.execute('CREATE INDEX "TextImage_projectId_idx" ON "TextImage"("projectId")')
         conn.commit()
+    else:
+        # 老库已经有 TextImage 表(referenceImagePaths 是唯一一个不分类的参考图字段)，
+        # 这里补两个新列，把"角色参考图"和"环境参考图"拆开管理，不影响老数据
+        # (老数据留在 referenceImagePaths 里，_run_text_image_generation 仍会读它兜底)。
+        text_image_cols = {r[1] for r in conn.execute('PRAGMA table_info("TextImage")').fetchall()}
+        if "characterReferenceImagePaths" not in text_image_cols:
+            conn.execute('ALTER TABLE "TextImage" ADD COLUMN "characterReferenceImagePaths" TEXT')
+            conn.commit()
+        if "sceneReferenceImagePaths" not in text_image_cols:
+            conn.execute('ALTER TABLE "TextImage" ADD COLUMN "sceneReferenceImagePaths" TEXT')
+            conn.commit()
 
     _startup_migration_checked = True
 

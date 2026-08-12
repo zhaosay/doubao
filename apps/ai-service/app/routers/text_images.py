@@ -27,6 +27,31 @@ def _split_paths(raw: Optional[str]) -> list[str]:
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
+def _build_reference_paths_and_hint(
+    character_paths: list[str], scene_paths: list[str], legacy_paths: list[str]
+) -> tuple[list[str], str]:
+    """把"角色参考图"和"环境参考图"合并成一份传给 Seedream 的路径列表，并生成一句
+    prompt 提示语。Ark 的 images/generations 接口本身不支持给每张参考图标注"这张是
+    角色/这张是环境"这种角色区分——多张参考图对模型来说就是无差别的一组图，所以这里
+    的分类主要是我们这边"管理上"分开(用户上传/预览体验更清楚)，真正喂给模型的仍是
+    一份合并列表；额外拼一句文字提示，让模型大致知道"前几张管人物、后几张管环境"，
+    是 best-effort，不是强约束。
+    legacy_paths 是老版本(拆分之前)存的不分类参考图，只有 character/scene 都没填时
+    才会用它兜底，保证老记录"重新生成"还能读到原来的参考图。
+    """
+    if not character_paths and not scene_paths and legacy_paths:
+        return legacy_paths, ""
+
+    merged = character_paths + scene_paths
+    hint_parts = []
+    if character_paths:
+        hint_parts.append(f"前 {len(character_paths)} 张参考图用于角色长相/穿着参考")
+    if scene_paths:
+        hint_parts.append(f"{'后' if character_paths else '前'} {len(scene_paths)} 张参考图用于环境/场景/光线参考")
+    hint = f"（{'，'.join(hint_parts)}）" if hint_parts else ""
+    return merged, hint
+
+
 def _serialize(row) -> dict:
     d = dict(row)
     d["url"] = to_static_url(d.get("filePath"))
@@ -53,8 +78,13 @@ class CreateTextImageBody(BaseModel):
     prompt: str
     styleMode: StyleMode = DEFAULT_STYLE_MODE
     orientation: Orientation = DEFAULT_POSTER_ORIENTATION
-    # 逗号分隔的本地参考图路径，可选——不传就是纯文生图。
+    # 老字段，保留兼容(早期版本不分类的参考图)；新前端已经不再往这里写，
+    # 统一用下面两个分类字段。
     referenceImagePaths: Optional[str] = None
+    # 角色参考图：逗号分隔的本地路径，想让画面人物长相/穿着贴近这几张图。
+    characterReferenceImagePaths: Optional[str] = None
+    # 环境参考图：逗号分隔的本地路径，想让画面场景/背景/光线贴近这几张图。
+    sceneReferenceImagePaths: Optional[str] = None
     projectId: Optional[str] = None
 
 
@@ -73,7 +103,8 @@ def create_text_image(body: CreateTextImageBody):
         image_id = new_id()
         conn.execute(
             'INSERT INTO "TextImage" (id, projectId, prompt, orientation, styleMode, referenceImagePaths, '
-            "status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "characterReferenceImagePaths, sceneReferenceImagePaths, status, createdAt) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 image_id,
                 body.projectId,
@@ -81,6 +112,8 @@ def create_text_image(body: CreateTextImageBody):
                 body.orientation,
                 body.styleMode,
                 body.referenceImagePaths,
+                body.characterReferenceImagePaths,
+                body.sceneReferenceImagePaths,
                 "running",
                 now_iso(),
             ),
@@ -94,6 +127,8 @@ def create_text_image(body: CreateTextImageBody):
             body.styleMode,
             body.orientation,
             body.projectId,
+            _split_paths(body.characterReferenceImagePaths),
+            _split_paths(body.sceneReferenceImagePaths),
             _split_paths(body.referenceImagePaths),
         ),
         daemon=True,
@@ -109,12 +144,15 @@ def _run_text_image_generation(
     style_mode: str,
     orientation: str,
     project_id: Optional[str],
-    reference_paths: list[str],
+    character_paths: list[str],
+    scene_paths: list[str],
+    legacy_paths: list[str],
 ) -> None:
     try:
+        reference_paths, hint = _build_reference_paths_and_hint(character_paths, scene_paths, legacy_paths)
         result = generate_standalone_image(
             image_id,
-            prompt,
+            prompt + hint,
             style_mode=style_mode,
             orientation=orientation,
             project_id=project_id,
@@ -147,6 +185,8 @@ def regenerate_text_image(image_id: str):
             row["styleMode"],
             row["orientation"],
             row["projectId"],
+            _split_paths(row["characterReferenceImagePaths"]),
+            _split_paths(row["sceneReferenceImagePaths"]),
             _split_paths(row["referenceImagePaths"]),
         ),
         daemon=True,

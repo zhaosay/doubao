@@ -317,6 +317,8 @@ interface TextImageItem {
   orientationLabel: string
   styleMode: StyleMode
   referenceImagePaths: string | null
+  characterReferenceImagePaths: string | null
+  sceneReferenceImagePaths: string | null
   filePath: string | null
   url: string | null
   status: 'pending' | 'running' | 'completed' | 'failed'
@@ -706,7 +708,10 @@ const textImageForm = reactive({
   styleMode: 'comic' as StyleMode,
   orientation: 'portrait' as 'portrait' | 'landscape'
 })
-const textImageRefPathInput = reactive<Record<string, string>>({ new: '' })
+// 角色参考图(character)和环境参考图(scene)分开管理——用户上传时清楚这张图是给
+// "人物长相"参考还是"场景/环境"参考，两份各自支持多选+预览，生成时后端会合并
+// 成一份传给 Seedream(接口本身不支持按图片打标签，纯粹是我们这边管理上分开)。
+const textImageRefPathInput = reactive<Record<string, string>>({ character: '', scene: '' })
 const creatingTextImage = ref(false)
 const textImageError = ref<string | null>(null)
 const regeneratingTextImage = reactive<Record<string, boolean>>({})
@@ -1234,11 +1239,13 @@ async function createTextImage(): Promise<void> {
         prompt: textImageForm.prompt.trim(),
         styleMode: textImageForm.styleMode,
         orientation: textImageForm.orientation,
-        referenceImagePaths: textImageRefPathInput.new.trim() || null
+        characterReferenceImagePaths: textImageRefPathInput.character.trim() || null,
+        sceneReferenceImagePaths: textImageRefPathInput.scene.trim() || null
       })
     })
     textImageForm.prompt = ''
-    textImageRefPathInput.new = ''
+    textImageRefPathInput.character = ''
+    textImageRefPathInput.scene = ''
     textImagesTab.value = 'list'
     await loadTextImages()
   } catch (err) {
@@ -3062,22 +3069,43 @@ function statusLabel(status: string): string {
             </div>
 
             <div class="field">
-              <label>参考图<span class="field-badge">可选，多张用逗号分隔</span></label>
+              <label>角色参考图<span class="field-badge">可选，多张用逗号分隔</span></label>
               <div class="ref-path-row text-image-ref-row">
-                <input v-model="textImageRefPathInput.new" placeholder="本地图片路径；留空就是纯文生图" />
-                <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'new', true)">选择文件…</button>
+                <input v-model="textImageRefPathInput.character" placeholder="本地图片路径；想让画面人物长相/穿着贴近这几张图" />
+                <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'character', true)">选择文件…</button>
               </div>
-              <div v-if="previewEntries(textImageRefPathInput.new).length" class="text-image-ref-preview-wrap">
+              <div v-if="previewEntries(textImageRefPathInput.character).length" class="text-image-ref-preview-wrap">
                 <img
-                  v-for="entry in previewEntries(textImageRefPathInput.new)"
+                  v-for="entry in previewEntries(textImageRefPathInput.character)"
                   :key="entry.path"
                   class="ref-pick-preview text-image-ref-preview"
                   :src="entry.preview"
                   :title="entry.path"
                 />
-                <span>已选择 {{ splitPaths(textImageRefPathInput.new).length }} 张参考图</span>
+                <span>已选择 {{ splitPaths(textImageRefPathInput.character).length }} 张角色参考图</span>
               </div>
             </div>
+
+            <div class="field">
+              <label>环境参考图<span class="field-badge">可选，多张用逗号分隔</span></label>
+              <div class="ref-path-row text-image-ref-row">
+                <input v-model="textImageRefPathInput.scene" placeholder="本地图片路径；想让画面场景/背景/光线贴近这几张图" />
+                <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'scene', true)">选择文件…</button>
+              </div>
+              <div v-if="previewEntries(textImageRefPathInput.scene).length" class="text-image-ref-preview-wrap">
+                <img
+                  v-for="entry in previewEntries(textImageRefPathInput.scene)"
+                  :key="entry.path"
+                  class="ref-pick-preview text-image-ref-preview"
+                  :src="entry.preview"
+                  :title="entry.path"
+                />
+                <span>已选择 {{ splitPaths(textImageRefPathInput.scene).length }} 张环境参考图</span>
+              </div>
+            </div>
+            <p v-if="!textImageRefPathInput.character && !textImageRefPathInput.scene" class="field-help">
+              两种参考图都留空就是纯文生图，全靠画面描述发挥。
+            </p>
           </section>
 
           <aside class="text-image-preview-panel">
