@@ -15,6 +15,10 @@ class ExportBody(BaseModel):
     # 不传就用设置页里保存的默认值(exportBurnSubtitles)；显式传 true/false 时以请求为准，
     # 这样前端"这次导出要不要烧字幕"的临时勾选，能覆盖掉设置页的默认选项。
     burnSubtitles: Optional[bool] = None
+    # 同样的模式：不传就用设置页的 exportUseBgm 默认值，传了以这次请求为准。
+    # 背景音乐文件本身(exportBgmPath)+音量(exportBgmVolume)只在设置页配置，不在这里
+    # 每次单独传——这是个"全局默认配一次"的东西，不是每次导出都要重新选文件。
+    useBgm: Optional[bool] = None
 
 
 @router.post("/{project_id}/export")
@@ -56,14 +60,24 @@ def export_project(project_id: str, body: ExportBody = ExportBody()):
                 }
             )
 
-    if body.burnSubtitles is None:
-        with get_connection() as conn:
-            burn_subtitles = get_settings(conn).get("exportBurnSubtitles", True)
-    else:
-        burn_subtitles = body.burnSubtitles
+    with get_connection() as conn:
+        export_settings = get_settings(conn)
+
+    burn_subtitles = (
+        body.burnSubtitles if body.burnSubtitles is not None else export_settings.get("exportBurnSubtitles", True)
+    )
+    use_bgm = body.useBgm if body.useBgm is not None else export_settings.get("exportUseBgm", False)
+    bgm_path = export_settings.get("exportBgmPath") if use_bgm else None
+    bgm_volume = export_settings.get("exportBgmVolume", 0.2)
 
     try:
-        final_path, skipped = export_project_video(project_id, shots_with_video, burn_subtitles=burn_subtitles)
+        final_path, skipped = export_project_video(
+            project_id,
+            shots_with_video,
+            burn_subtitles=burn_subtitles,
+            bgm_path=bgm_path,
+            bgm_volume=bgm_volume,
+        )
     except ExportError as exc:
         raise HTTPException(400, str(exc)) from exc
 

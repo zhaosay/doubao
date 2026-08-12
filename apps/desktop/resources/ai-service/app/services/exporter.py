@@ -69,8 +69,62 @@ def build_srt(shots_with_video: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _has_audio_stream(video_path: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return bool(proc.stdout.strip())
+    except subprocess.SubprocessError:
+        return False
+
+
+def _mix_background_music(video_path: str, bgm_path: str, bgm_volume: float, dest_path: str) -> bool:
+    """把背景音乐循环叠加到成片下面。Seedance 视频默认不带音频，所以成片可能压根没有
+    音轨——这种情况直接把（调低音量的）背景音乐当唯一音轨；如果成片本来就有音轨，
+    就用 amix 把两条轨混在一起，背景音乐调低音量、原音轨音量不变，避免盖过对白/
+    原始音效。用 -stream_loop -1 让背景音乐无限循环，配合 -shortest 让最终时长
+    跟着（更短的）视频走，不用自己算时长对不对得上。
+    这一步是锦上添花，不应该拖垮整个导出——调用方在失败时应该回退用不带背景音乐的
+    版本，不抛异常。
+    """
+    has_audio = _has_audio_stream(video_path)
+    if has_audio:
+        filter_complex = (
+            f"[1:a]volume={bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        )
+    else:
+        filter_complex = f"[1:a]volume={bgm_volume}[aout]"
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-stream_loop", "-1", "-i", bgm_path,
+            "-filter_complex", filter_complex,
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "copy",
+            "-shortest",
+            str(dest_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=FFMPEG_TIMEOUT_SEC,
+    )
+    return proc.returncode == 0 and Path(dest_path).exists()
+
+
 def export_project_video(
-    project_id: str, shots_with_video: list[dict], burn_subtitles: bool = True
+    project_id: str,
+    shots_with_video: list[dict],
+    burn_subtitles: bool = True,
+    bgm_path: Optional[str] = None,
+    bgm_volume: float = 0.2,
 ) -> tuple[str, list[dict]]:
     """
     shots_with_video 需按最终顺序排好: [{"videoPath": str|None, "dialogue": str|None, "durationSec": float, ...}, ...]
@@ -146,37 +200,44 @@ def export_project_video(
             if proc.returncode != 0:
                 raise ExportError(f"ffmpeg 拼接失败: {proc.stderr[-2000:]}")
 
-        if not burn_subtitles:
-            return str(concat_path), skipped
+        # best_path 全程指向"目前为止最完整的一版成片"——后面每一步（烧字幕、加背景
+        # 音乐）都是在上一步的产物基础上继续处理，任意一步失败都退回上一步的结果，
+        # 不会让"锦上添花"的步骤拖垮已经成功的部分。
+        best_path = concat_path
 
-        srt_content = build_srt(shots_with_video)
-        if not srt_content.strip():
-            return str(concat_path), skipped
+        if burn_subtitles:
+            srt_content = build_srt(shots_with_video)
+            if srt_content.strip():
+                srt_path = tmp_path / "subs.srt"
+                srt_path.write_text(srt_content, encoding="utf-8")
 
-        srt_path = tmp_path / "subs.srt"
-        srt_path.write_text(srt_content, encoding="utf-8")
+                final_path = out_dir / f"final_{stamp}.mp4"
+                # subtitles 滤镜的路径里不能有冒号/反斜杠转义问题，统一转成 posix 相对写法更稳。
+                escaped_srt = str(srt_path).replace("\\", "/").replace(":", "\\:")
+                proc = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(best_path),
+                        "-vf",
+                        f"subtitles='{escaped_srt}'",
+                        "-c:a",
+                        "copy",
+                        str(final_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=FFMPEG_TIMEOUT_SEC,
+                )
+                if proc.returncode == 0 and final_path.exists():
+                    best_path = final_path
+                # 烧字幕失败不影响 best_path，继续用拼接版本走下一步。
 
-        final_path = out_dir / f"final_{stamp}.mp4"
-        # subtitles 滤镜的路径里不能有冒号/反斜杠转义问题，统一转成 posix 相对写法更稳。
-        escaped_srt = str(srt_path).replace("\\", "/").replace(":", "\\:")
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(concat_path),
-                "-vf",
-                f"subtitles='{escaped_srt}'",
-                "-c:a",
-                "copy",
-                str(final_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=FFMPEG_TIMEOUT_SEC,
-        )
-        if proc.returncode != 0 or not final_path.exists():
-            # 字幕烧录失败不应该让整个导出失败，退回没字幕的拼接版本。
-            return str(concat_path), skipped
+        if bgm_path and Path(bgm_path).is_file():
+            bgm_out_path = out_dir / f"final_bgm_{stamp}.mp4"
+            if _mix_background_music(str(best_path), bgm_path, bgm_volume, str(bgm_out_path)):
+                best_path = bgm_out_path
+            # 混音失败同样不影响 best_path，返回混音之前的版本。
 
-        return str(final_path), skipped
+        return str(best_path), skipped

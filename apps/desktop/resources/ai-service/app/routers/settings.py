@@ -1,14 +1,19 @@
 import json
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db import get_connection, get_settings
+from app.services.story_generator import test_anthropic_api, test_claude_cli
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+StoryGenProvider = Literal["claude_cli", "api"]
 
 # 跟 story_generator.py 的 STYLE_HINTS/CONTENT_TYPE_HINTS、seedream.py 的 STYLE_PREFIXES
 # 用同一套 key，设置页存的自定义值是"按 key 覆盖"，不是整份替换，所以这里要知道
@@ -28,6 +33,12 @@ class UpdateSettingsBody(BaseModel):
     outputDir: Optional[str] = None
     exportDir: Optional[str] = None
     exportBurnSubtitles: Optional[bool] = None
+    # 背景音乐：本地音频文件路径，留空 = 不设置(即使 exportUseBgm 开着也不会加，因为
+    # 没有素材)。跟 outputDir 一样的约定，传空字符串是"清空自定义值"。
+    exportBgmPath: Optional[str] = None
+    # 0~1 之间，成片原本的音轨保持原音量，背景音乐按这个系数降低。
+    exportBgmVolume: Optional[float] = None
+    exportUseBgm: Optional[bool] = None
     # 海报标题/副标题文字渲染用的字体文件路径，留空 = 用 poster_composer.py 按操作系统
     # 猜测的几个常见系统字体路径；跟 outputDir 一样的约定，传空字符串是"清空自定义值"。
     posterFontPath: Optional[str] = None
@@ -38,6 +49,24 @@ class UpdateSettingsBody(BaseModel):
     customStyleHints: Optional[str] = None
     customContentTypeHints: Optional[str] = None
     customProjectTemplates: Optional[str] = None
+    # 剧本生成方式：claude_cli(默认，本机 Claude Code CLI) | api(第三方 Anthropic
+    # Messages API 兼容服务)。切到 api 时下面三个字段(baseUrl/apiKey/model)必填，
+    # 校验逻辑见 update_settings 里的 story_gen_provider 分支。
+    storyGenProvider: Optional[StoryGenProvider] = None
+    storyGenApiBaseUrl: Optional[str] = None
+    storyGenApiKey: Optional[str] = None
+    storyGenApiModel: Optional[str] = None
+    storyGenApiMaxTokens: Optional[int] = None
+
+
+class TestStoryApiBody(BaseModel):
+    # 全部留空 = 用已保存的设置去测；填了哪个字段就用哪个字段覆盖已保存的值——
+    # 这样用户改完 Base URL/API Key 但还没点保存，也能先测一下填得对不对，
+    # 不用先保存再测、测完发现错了再改一遍。
+    baseUrl: Optional[str] = None
+    apiKey: Optional[str] = None
+    model: Optional[str] = None
+    maxTokens: Optional[int] = None
 
 
 def _mask(key: Optional[str]) -> Optional[str]:
@@ -83,6 +112,35 @@ def _validate_font_path(raw: Optional[str]) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"这个文件不是 Pillow 能识别的字体格式: {path}（{exc}）") from exc
     return str(path)
+
+
+def _validate_bgm_path(raw: Optional[str]) -> Optional[str]:
+    """背景音乐文件：只要求文件存在，不像海报字体那样再校验格式——音频格式一大堆
+    (mp3/wav/aac/m4a...)，靠 ffmpeg 自己去读，读不了的话混音那一步会失败，
+    exporter.py 已经做了"混音失败就回退用没有背景音乐的版本"，不会拖垮整个导出。
+    """
+    if not raw or not raw.strip():
+        return None
+    path = Path(raw.strip()).expanduser()
+    if not path.is_file():
+        raise HTTPException(400, f"背景音乐文件不存在: {path}")
+    return str(path)
+
+
+def _validate_bgm_volume(value: Optional[float]) -> float:
+    if value is None:
+        return 0.2
+    if not (0 <= value <= 1):
+        raise HTTPException(400, "背景音乐音量必须在 0~1 之间")
+    return value
+
+
+def _validate_story_gen_max_tokens(value: Optional[int]) -> int:
+    if value is None:
+        return 4096
+    if not (1 <= value <= 200000):
+        raise HTTPException(400, "最大输出 Token 必须在 1~200000 之间")
+    return value
 
 
 def _validate_key_map(label: str, raw: str, allowed_keys: set[str]) -> str:
@@ -152,12 +210,21 @@ def read_settings():
         "outputDir": s.get("outputDir"),
         "exportDir": s.get("exportDir"),
         "exportBurnSubtitles": s.get("exportBurnSubtitles", True),
+        "exportBgmPath": s.get("exportBgmPath"),
+        "exportBgmVolume": s.get("exportBgmVolume", 0.2),
+        "exportUseBgm": s.get("exportUseBgm", False),
         "posterFontPath": s.get("posterFontPath"),
         # 这 4 个 get_settings 已经从 JSON 文本解析成 dict/list 了，null 就是没自定义过。
         "customStylePrefixes": s.get("customStylePrefixes"),
         "customStyleHints": s.get("customStyleHints"),
         "customContentTypeHints": s.get("customContentTypeHints"),
         "customProjectTemplates": s.get("customProjectTemplates"),
+        "storyGenProvider": s.get("storyGenProvider", "claude_cli"),
+        "storyGenApiBaseUrl": s.get("storyGenApiBaseUrl"),
+        "storyGenApiKey": _mask(s.get("storyGenApiKey")),
+        "storyGenApiKeySet": bool(s.get("storyGenApiKey")),
+        "storyGenApiModel": s.get("storyGenApiModel"),
+        "storyGenApiMaxTokens": s.get("storyGenApiMaxTokens", 4096),
     }
 
 
@@ -201,6 +268,47 @@ def update_settings(body: UpdateSettingsBody):
             if body.posterFontPath is not None
             else current.get("posterFontPath")
         )
+        export_bgm_path = (
+            _validate_bgm_path(body.exportBgmPath) if body.exportBgmPath is not None else current.get("exportBgmPath")
+        )
+        export_bgm_volume = (
+            _validate_bgm_volume(body.exportBgmVolume)
+            if body.exportBgmVolume is not None
+            else current.get("exportBgmVolume", 0.2)
+        )
+        export_use_bgm = body.exportUseBgm if body.exportUseBgm is not None else current.get("exportUseBgm", False)
+
+        story_gen_provider = (
+            body.storyGenProvider if body.storyGenProvider is not None else current.get("storyGenProvider", "claude_cli")
+        )
+        story_gen_api_base_url = (
+            body.storyGenApiBaseUrl if body.storyGenApiBaseUrl is not None else current.get("storyGenApiBaseUrl")
+        )
+        story_gen_api_key = (
+            body.storyGenApiKey if body.storyGenApiKey is not None else current.get("storyGenApiKey")
+        )
+        story_gen_api_model = (
+            body.storyGenApiModel if body.storyGenApiModel is not None else current.get("storyGenApiModel")
+        )
+        story_gen_api_max_tokens = (
+            _validate_story_gen_max_tokens(body.storyGenApiMaxTokens)
+            if body.storyGenApiMaxTokens is not None
+            else current.get("storyGenApiMaxTokens", 4096)
+        )
+        # 切到"第三方 API"就必须把三个字段都填完整，不然存进去一个"选了 api 但没配置全"
+        # 的半吊子状态，等到真正生成剧本那一刻才报错，体验比现在保存时就拦下来更差。
+        if story_gen_provider == "api":
+            missing = [
+                label
+                for label, value in [
+                    ("Base URL", story_gen_api_base_url),
+                    ("API Key", story_gen_api_key),
+                    ("模型名", story_gen_api_model),
+                ]
+                if not (value or "").strip()
+            ]
+            if missing:
+                raise HTTPException(400, f"选了第三方 API 生成剧本，还差这些没填：{'、'.join(missing)}")
 
         def _resolve_json_field(body_value: Optional[str], column: str, validator) -> Optional[str]:
             if body_value is None:
@@ -231,9 +339,12 @@ def update_settings(body: UpdateSettingsBody):
         if existing is None:
             conn.execute(
                 'INSERT INTO "Setting" (id, arkApiKey, arkBaseUrl, arkImageModel, arkVideoModel, '
-                "indexTtsBaseUrl, outputDir, exportDir, exportBurnSubtitles, "
+                "indexTtsBaseUrl, outputDir, exportDir, exportBurnSubtitles, exportBgmPath, "
+                "exportBgmVolume, exportUseBgm, "
                 "customStylePrefixes, customStyleHints, customContentTypeHints, customProjectTemplates, "
-                "posterFontPath, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "posterFontPath, storyGenProvider, storyGenApiBaseUrl, storyGenApiKey, storyGenApiModel, "
+                "storyGenApiMaxTokens, updatedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "singleton",
                     ark_api_key,
@@ -244,11 +355,19 @@ def update_settings(body: UpdateSettingsBody):
                     output_dir,
                     export_dir,
                     export_burn_subtitles,
+                    export_bgm_path,
+                    export_bgm_volume,
+                    export_use_bgm,
                     custom_style_prefixes,
                     custom_style_hints,
                     custom_content_type_hints,
                     custom_project_templates,
                     poster_font_path,
+                    story_gen_provider,
+                    story_gen_api_base_url,
+                    story_gen_api_key,
+                    story_gen_api_model,
+                    story_gen_api_max_tokens,
                     now,
                 ),
             )
@@ -256,8 +375,11 @@ def update_settings(body: UpdateSettingsBody):
             conn.execute(
                 'UPDATE "Setting" SET arkApiKey = ?, arkBaseUrl = ?, arkImageModel = ?, arkVideoModel = ?, '
                 "indexTtsBaseUrl = ?, outputDir = ?, exportDir = ?, exportBurnSubtitles = ?, "
+                "exportBgmPath = ?, exportBgmVolume = ?, exportUseBgm = ?, "
                 "customStylePrefixes = ?, customStyleHints = ?, customContentTypeHints = ?, "
-                'customProjectTemplates = ?, posterFontPath = ?, updatedAt = ? WHERE id = ?',
+                "customProjectTemplates = ?, posterFontPath = ?, storyGenProvider = ?, "
+                'storyGenApiBaseUrl = ?, storyGenApiKey = ?, storyGenApiModel = ?, storyGenApiMaxTokens = ?, '
+                'updatedAt = ? WHERE id = ?',
                 (
                     ark_api_key,
                     ark_base_url,
@@ -267,14 +389,50 @@ def update_settings(body: UpdateSettingsBody):
                     output_dir,
                     export_dir,
                     export_burn_subtitles,
+                    export_bgm_path,
+                    export_bgm_volume,
+                    export_use_bgm,
                     custom_style_prefixes,
                     custom_style_hints,
                     custom_content_type_hints,
                     custom_project_templates,
                     poster_font_path,
+                    story_gen_provider,
+                    story_gen_api_base_url,
+                    story_gen_api_key,
+                    story_gen_api_model,
+                    story_gen_api_max_tokens,
                     now,
                     "singleton",
                 ),
             )
 
     return read_settings()
+
+
+@router.post("/test-story-cli")
+def test_story_cli():
+    """测本机 claude CLI（Claude Code CLI）是否能正常调用。用户在 Windows 上反馈
+    "AI生成剧本"一直出错，但不确定是没装/没登录/网络问题——这个按钮不改任何设置，
+    只是跑一次真实的 subprocess 调用，把结果原样返回，让用户自己看出到底卡在哪。
+    """
+    ok, message = test_claude_cli()
+    return {"ok": ok, "message": message}
+
+
+@router.post("/test-story-api")
+def test_story_api(body: TestStoryApiBody):
+    """测第三方 Anthropic Messages API 兼容服务是否配置正确、能不能连通。
+    body 里的字段是可选的覆盖值：填了就用填的值测，没填就用已保存在 Setting 表里的值——
+    这样用户在设置页改完 Base URL/API Key 还没点保存，也能先测一下再决定要不要保存。
+    """
+    with get_connection() as conn:
+        current = get_settings(conn)
+
+    base_url = body.baseUrl if body.baseUrl is not None else current.get("storyGenApiBaseUrl")
+    api_key = body.apiKey if body.apiKey is not None else current.get("storyGenApiKey")
+    model = body.model if body.model is not None else current.get("storyGenApiModel")
+    max_tokens = body.maxTokens if body.maxTokens is not None else current.get("storyGenApiMaxTokens")
+
+    ok, message = test_anthropic_api(base_url, api_key, model, max_tokens)
+    return {"ok": ok, "message": message}

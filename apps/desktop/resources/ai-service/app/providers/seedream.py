@@ -1,7 +1,7 @@
 from app.db import get_connection, get_settings
 from app.providers.registry import ImageProvider
 from app.services import ark_client
-from app.services.paths import asset_dir, character_dir, poster_dir, scene_dir
+from app.services.paths import asset_dir, character_dir, poster_dir, scene_dir, text_image_dir
 
 # 统一注入的风格前缀：不再只指望 claude 写剧本时每一镜都记得重复"国漫赛璐璐风格"，
 # 那样只要漏写一次，Seedream 在没有参考图兜底的情况下就容易飘去写实/真人方向。
@@ -249,6 +249,46 @@ def generate_poster_background(
     )
 
     dest = poster_dir(poster_id, project_id) / "background.png"
+    ark_client.download_to_file(image_url, str(dest))
+
+    return {"filePath": str(dest), "providerId": "seedream", "model": model}
+
+
+def generate_standalone_image(
+    image_id: str,
+    prompt: str,
+    style_mode: str = DEFAULT_STYLE_MODE,
+    orientation: str = DEFAULT_POSTER_ORIENTATION,
+    project_id: str | None = None,
+    reference_image_paths: list[str] | None = None,
+) -> dict:
+    """独立文生图用：跟海报背景图共用画幅(orientation->size)配置，但不加"不要出现
+    任何文字"的约束、生成结果也不会再被 Pillow 二次加工——用户想要的就是 AI 直接画出来
+    的这张图，可能就是想要图里带字（比如海报草稿/表情包），不该强行禁止。
+    reference_image_paths 可选：传了就是图生图（参考构图/风格），不传就是纯文生图。
+    """
+    orientation_cfg = POSTER_ORIENTATIONS.get(orientation, POSTER_ORIENTATIONS[DEFAULT_POSTER_ORIENTATION])
+    with get_connection() as conn:
+        settings = get_settings(conn)
+
+    api_key = settings.get("arkApiKey")
+    model = settings.get("arkImageModel") or ark_client.DEFAULT_SEEDREAM_MODEL
+    base_url = settings.get("arkBaseUrl") or ark_client.ARK_BASE_URL
+
+    reference_urls = None
+    if reference_image_paths:
+        reference_urls = [ark_client._file_to_data_uri(p) for p in reference_image_paths]
+
+    image_url = ark_client.generate_image(
+        api_key=api_key,
+        prompt=_with_style(prompt, style_mode, settings.get("customStylePrefixes")),
+        reference_image_urls=reference_urls,
+        size=orientation_cfg["size"],
+        model=model,
+        base_url=base_url,
+    )
+
+    dest = text_image_dir(image_id, project_id) / "image.png"
     ark_client.download_to_file(image_url, str(dest))
 
     return {"filePath": str(dest), "providerId": "seedream", "model": model}

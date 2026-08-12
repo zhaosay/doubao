@@ -6,7 +6,19 @@ from app.providers.indextts import IndexTTSVoiceProvider
 from app.providers.registry import registry
 from app.providers.seedance import SeedanceVideoProvider
 from app.providers.seedream import SeedreamImageProvider
-from app.routers import characters, export, poster_templates, posters, projects, scenes, settings, shots, tasks
+from app.routers import (
+    characters,
+    export,
+    poster_templates,
+    posters,
+    projects,
+    scenes,
+    settings,
+    shots,
+    tasks,
+    text_images,
+    video_generations,
+)
 from app.services.paths import DEFAULT_OUTPUT_ROOT, resolve_static_file
 
 registry.register("image", "default", SeedreamImageProvider())
@@ -35,6 +47,8 @@ app.include_router(characters.router)
 app.include_router(scenes.router)
 app.include_router(posters.router)
 app.include_router(poster_templates.router)
+app.include_router(video_generations.router)
+app.include_router(text_images.router)
 
 DEFAULT_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 

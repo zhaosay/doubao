@@ -52,11 +52,19 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "outputDir": None,
             "exportDir": None,
             "exportBurnSubtitles": True,
+            "exportBgmPath": None,
+            "exportBgmVolume": 0.2,
+            "exportUseBgm": False,
             "customStylePrefixes": None,
             "customStyleHints": None,
             "customContentTypeHints": None,
             "customProjectTemplates": None,
             "posterFontPath": None,
+            "storyGenProvider": "claude_cli",
+            "storyGenApiBaseUrl": None,
+            "storyGenApiKey": None,
+            "storyGenApiModel": None,
+            "storyGenApiMaxTokens": 4096,
         }
     d = dict(row)
     if not d.get("indexTtsBaseUrl"):
@@ -64,6 +72,13 @@ def get_settings(conn: sqlite3.Connection) -> dict:
     # SQLite 里 Boolean 落地是 0/1，这里转成真 bool，不然透传到前端 JSON 会变成数字 0/1
     # 而不是 false/true，前端 v-model 绑 checkbox 就会出问题。
     d["exportBurnSubtitles"] = bool(d.get("exportBurnSubtitles", True))
+    d["exportUseBgm"] = bool(d.get("exportUseBgm", False))
+    if d.get("exportBgmVolume") is None:
+        d["exportBgmVolume"] = 0.2
+    if not d.get("storyGenProvider"):
+        d["storyGenProvider"] = "claude_cli"
+    if d.get("storyGenApiMaxTokens") is None:
+        d["storyGenApiMaxTokens"] = 4096
     for key in _JSON_SETTING_KEYS:
         raw = d.get(key)
         if raw:
@@ -121,6 +136,33 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         # 字体文件——留空就走 poster_composer.py 里按操作系统猜测的几个常见系统字体路径，
         # 猜不到就会在生成海报时报错，报错信息里会提示来这里手动填一个。
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "posterFontPath" TEXT')
+        conn.commit()
+    if "exportBgmPath" not in setting_cols:
+        # 背景音乐：本地音频文件路径，导出时循环叠加到成片音轨下面(见 exporter.py)。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "exportBgmPath" TEXT')
+        conn.commit()
+    if "exportBgmVolume" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "exportBgmVolume" REAL NOT NULL DEFAULT 0.2')
+        conn.commit()
+    if "exportUseBgm" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "exportUseBgm" BOOLEAN NOT NULL DEFAULT 0')
+        conn.commit()
+    if "storyGenProvider" not in setting_cols:
+        # 剧本生成方式：claude_cli(默认，调本机 Claude Code CLI) | api(直连第三方
+        # Anthropic Messages API 兼容服务)，见 story_generator.py。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenProvider" TEXT NOT NULL DEFAULT \'claude_cli\'')
+        conn.commit()
+    if "storyGenApiBaseUrl" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiBaseUrl" TEXT')
+        conn.commit()
+    if "storyGenApiKey" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiKey" TEXT')
+        conn.commit()
+    if "storyGenApiModel" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiModel" TEXT')
+        conn.commit()
+    if "storyGenApiMaxTokens" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiMaxTokens" INTEGER NOT NULL DEFAULT 4096')
         conn.commit()
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     _POSTER_DDL_LEGACY_PRESET = """
@@ -361,6 +403,71 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
             conn.execute('CREATE INDEX "Poster_templateId_idx" ON "Poster"("templateId")')
             conn.execute("PRAGMA foreign_keys=ON")
             conn.commit()
+
+    if "VideoGeneration" not in tables:
+        # 无剧本图生视频：独立一级功能，跟 Poster 一样不挂在任何 Project 下也能用，
+        # projectId 只是可选的备注性关联。单张参考图 + 一段描述，直接调 Seedance
+        # 出一条视频，不经过 Story/Scene/Shot 那一整套结构。
+        conn.execute(
+            """
+            CREATE TABLE "VideoGeneration" (
+                "id" TEXT NOT NULL PRIMARY KEY,
+                "projectId" TEXT,
+                "referenceImagePath" TEXT NOT NULL,
+                "prompt" TEXT NOT NULL,
+                "filePath" TEXT,
+                "status" TEXT NOT NULL DEFAULT 'pending',
+                "error" TEXT,
+                "providerId" TEXT,
+                "model" TEXT,
+                "createdAt" TEXT NOT NULL,
+                CONSTRAINT "VideoGeneration_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+            """
+        )
+        conn.execute('CREATE INDEX "VideoGeneration_projectId_idx" ON "VideoGeneration"("projectId")')
+        conn.commit()
+
+    if "TextImage" not in tables:
+        # 独立文生图：同样不挂在 Project 下，纯"写描述 -> 出图"，跟海报共用出图风格
+        # 前缀(styleMode)和画幅(orientation)概念，但不做标题文字合成。
+        # referenceImagePaths 是老字段(不分类的参考图，早期版本用)，character/scene
+        # 两个新字段上线后新建的记录不再往这个老字段写，只是保留兼容老数据。
+        conn.execute(
+            """
+            CREATE TABLE "TextImage" (
+                "id" TEXT NOT NULL PRIMARY KEY,
+                "projectId" TEXT,
+                "prompt" TEXT NOT NULL,
+                "orientation" TEXT NOT NULL DEFAULT 'portrait',
+                "styleMode" TEXT NOT NULL DEFAULT 'comic',
+                "referenceImagePaths" TEXT,
+                "characterReferenceImagePaths" TEXT,
+                "sceneReferenceImagePaths" TEXT,
+                "filePath" TEXT,
+                "status" TEXT NOT NULL DEFAULT 'pending',
+                "error" TEXT,
+                "providerId" TEXT,
+                "model" TEXT,
+                "createdAt" TEXT NOT NULL,
+                CONSTRAINT "TextImage_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+            """
+        )
+        conn.execute('CREATE INDEX "TextImage_projectId_idx" ON "TextImage"("projectId")')
+        conn.commit()
+    else:
+        # 老库已经有 TextImage 表(referenceImagePaths 是唯一一个不分类的参考图字段)，
+        # 这里补两个新列，把"角色参考图"和"环境参考图"拆开管理，不影响老数据
+        # (老数据留在 referenceImagePaths 里，_run_text_image_generation 仍会读它兜底)。
+        text_image_cols = {r[1] for r in conn.execute('PRAGMA table_info("TextImage")').fetchall()}
+        if "characterReferenceImagePaths" not in text_image_cols:
+            conn.execute('ALTER TABLE "TextImage" ADD COLUMN "characterReferenceImagePaths" TEXT')
+            conn.commit()
+        if "sceneReferenceImagePaths" not in text_image_cols:
+            conn.execute('ALTER TABLE "TextImage" ADD COLUMN "sceneReferenceImagePaths" TEXT')
+            conn.commit()
+
     _startup_migration_checked = True
 
 
