@@ -1,0 +1,5 @@
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.31
+requests>=2.32,<3
+gradio_client>=1.0
+Pillow>=10,<11

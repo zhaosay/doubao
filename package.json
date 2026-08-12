@@ -1,0 +1,21 @@
+{
+  "name": "ai-manju-mvp",
+  "private": true,
+  "version": "0.0.1",
+  "workspaces": [
+    "apps/desktop",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:desktop": "npm run dev --workspace=apps/desktop",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/desktop",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/desktop"
+  },
+  "allowScripts": {
+    "electron@31.7.7": true,
+    "esbuild@0.21.5": true,
+    "prisma@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "@prisma/client@5.22.0": true
+  }
+}

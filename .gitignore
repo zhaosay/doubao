@@ -1,0 +1,28 @@
+node_modules/
+dist/
+dist-electron/
+out/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 生成的数据库和生成产物，本地开发数据不入库（app.db 里存着 Ark API Key 等设置，
+# 绝对不能进 git；老版本可能留有 _old_* 开头的临时备份文件，一并排除）
+data/app.db
+data/app.db-journal
+data/_old_*
+output/
+
+# Python
+apps/ai-service/.venv/
+apps/ai-service/__pycache__/
+apps/ai-service/**/__pycache__/
+*.pyc
+
+# 环境变量/密钥文件——项目里目前没有用到，但以防以后加，先兜底排除
+.env
+.env.*
+*.pem
+*.key

@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../../../data/app.db"
+}
+
+// 一句话故事描述 + 项目整体状态
+model Project {
+  id        String   @id @default(cuid())
+  title     String
+  premise   String
+  status    String   @default("draft") // draft | active | archived
+  // 出图风格：comic(国漫赛璐璐/二次元) | realistic(真人实拍/写实摄影) | render3d(3D渲染/CG)
+  // | freeform(AI自由发挥，不注入任何风格前缀)。整部剧通常从头到尾风格一致，所以挂在
+  // 项目级别，不是场次/镜头级别；角色设定图、场景参考图、镜头画面生图时统一按这个来
+  // 注入风格前缀(见 seedream.py)，剧本生成时也按这个来给 claude 的提示词加画风说明
+  // (见 story_generator.py)，避免"选真人却按国漫措辞写分镜描述"这种文字和画面对不上。
+  styleMode String   @default("comic")
+  // 内容类型：character(人物剧情，剧本正常按角色驱动来写) | no_character(无固定角色，
+  // 风光/氛围/产品向内容，写剧本时不强行编人物，角色库步骤也相应弱化)。之前剧本生成
+  // 不管故事需不需要角色都会编几个人物出来，塞进 characterName，角色库看着莫名其妙
+  // 多出一堆要处理的角色——加这个开关让用户在建项目时就说清楚"这个故事要不要人"。
+  contentType String @default("character")
+  createdAt DateTime @default(now())
+  // 最近一次导出成片成功的时间，null = 还没导出过。项目列表页用它显示"已导出"标签。
+  lastExportedAt DateTime?
+  story     Story?
+  posters   Poster[]
+}
+
+// AI 生成的完整剧本文本，1个Project对应1份Story，可重新生成覆盖
+model Story {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  project   Project  @relation(fields: [projectId], references: [id])
+  content   String   @default("")
+  status    String   @default("pending") // pending | running | completed | failed
+  scenes    Scene[]
+  characters Character[]
+}
+
+// 角色设定图（正面/侧面/表情特写），用来在分镜生图时当 reference_images，
+// 解决"每一镜角色长得不一样"的一致性问题。名字来自 Shot.characterName 里出现过的角色名。
+model Character {
+  id           String   @id @default(cuid())
+  storyId      String
+  story        Story    @relation(fields: [storyId], references: [id])
+  name         String
+  // 外观描述/自定义提示词，比如"黑色长发，校服，温柔笑容"——生成设定图时会拼在角色名
+  // 后面一起传给 Seedream；留空就只靠角色名让模型自由发挥。用户改完这个字段后点
+  // "重新生成设定图"就会带上新描述重新出图，不用每次都去改镜头的画面描述才能调角色长相。
+  prompt       String?
+  refImagePath String?
+  status       String   @default("pending") // pending | running | completed | failed
+  error        String?
+  providerId   String? // seedream
+  model        String? // 实际调用的模型 ID，比如 doubao-seedream-5.0-lite，方便追溯这张图是哪个模型出的
+  createdAt    DateTime @default(now())
+
+  @@unique([storyId, name])
+}
+
+// 剧本拆出的场次
+model Scene {
+  id      String @id @default(cuid())
+  storyId String
+  story   Story  @relation(fields: [storyId], references: [id])
+  order   Int
+  summary String
+  shots   Shot[]
+  // 场景环境母版图：同一场戏的所有镜头生图时都会带上这张参考图，
+  // 跟角色参考图一起注入，锁住背景/环境/光线，不然每个镜头的"同一个房间"
+  // 全靠模型自己发挥，容易越生成越不一样。生成方式跟角色设定图同一套(Seedream 纯文生图)。
+  refImagePath String?
+  status       String  @default("pending") // pending | running | completed | failed
+  error        String?
+  providerId   String? // seedream
+  model        String? // 实际调用的模型 ID，方便追溯这张场景图是哪个模型出的
+}
+
+// 最小生成单位。字段沿用现有 scenes.json 的形状(draw_prompt/motion_prompt大文本)，
+// 不拆成景别/运镜/构图等结构化分栏字段。
+model Shot {
+  id           String  @id @default(cuid())
+  sceneId      String
+  scene        Scene   @relation(fields: [sceneId], references: [id])
+  order        Int
+  sceneType    String? // 景别，如 远景/中景/特写，对应旧 scene_type
+  drawPrompt   String  // 对应旧 draw_prompt
+  motionPrompt String? // 对应旧 motion_prompt
+  dialogue     String?
+  durationSec  Float   @default(4)
+  characterName String? // 引用角色库里的角色名，MVP阶段仅做文本引用
+  // 这一镜结束后，接下一镜(不管是不是跨场次)时用什么转场手法，取自分镜手册"转场"分类里的
+  // 词条(比如"叠化""甩镜转场")。目前只是文本备注 + 自动拼进 motionPrompt 让 AI 生成时
+  // 真的拍出这个转场动作；没有做 ffmpeg 层面的后期转场特效。最后一镜的这个字段没有意义。
+  transitionToNext String?
+  // 这一镜的情绪/表演基调(比如"紧张""释然")，取自分镜手册"情绪"分类。景别/构图偏"镜头
+  // 语言"，这个偏"表演张力"，对漫剧这种强叙事内容比较关键，跟 sceneType 同一个模式：
+  // 独立小字段 + 自己的手册下拉，不跟 drawPrompt 混在一起写。
+  emotion      String?
+  assets       Asset[]
+}
+
+// 生成产物文件（image/video/voice/export），type区分种类
+model Asset {
+  id         String   @id @default(cuid())
+  shotId     String
+  shot       Shot     @relation(fields: [shotId], references: [id])
+  type       String   // image | video | voice | export
+  status     String   @default("pending") // pending | running | completed | failed
+  filePath   String?
+  providerId String?  // seedream | seedance | indextts ...
+  // 实际调用的模型 ID，比如 doubao-seedance-2.0-fast——Seedance 配额打满时会自动
+  // 降级到 -fast/-mini，这个字段记的是"这条素材真正是哪个模型生成的"，不是设置页配的默认值，
+  // 两者可能不一样，UI 上要显示这个才准确。
+  model      String?
+  error      String?
+  // 一个 shot+type 可以有多条候选素材（批量生成选优用），selected 标记当前生效的那条，
+  // 下游（生成视频用的起始帧、导出合成）只认 selected=true 的那条。默认 true 是为了兼容
+  // "只生成一次、原地覆盖"的旧单素材流程——那条路径永远只有一行，天然就是"被选中"的。
+  selected   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+// 宣传海报：独立的一级功能，不挂在任何 Project 下——建海报不需要先建视频项目、
+// 写完剧本才能出海报。分两步生成：Seedream 先出一张"不含文字"的背景图
+// (backgroundPath)，再用 Pillow 把标题/副标题真实渲染叠上去得到最终成品图(filePath)——
+// AI 直接在图里画中文字容易变形/错别字，所以文字是代码渲染的，不是模型画的。
+// projectId 保留但改成可选：纯粹是"这张海报是照哪个视频项目的调子出的"这种备注性质的
+// 关联，不是必须字段，海报列表/生成流程完全不依赖它。
+model Poster {
+  id        String   @id @default(cuid())
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  // 画幅方向：portrait(竖版) | landscape(横版)，决定生成尺寸(见 seedream.py
+  // POSTER_ORIENTATIONS)，是跟"类型/模版"完全独立的一个轴。
+  orientation String @default("portrait")
+  // 用哪个类型模版生成的，可选——模版被删除时这里自动置空(ON DELETE SET NULL)，
+  // 不影响这张已经生成好的海报。templateLabel/promptText 是生成当下从模版复制的
+  // 一份快照(不是引用)，模版以后被改名/改提示词/删除，都不影响回看这张海报当初
+  // 到底用的什么设置；没选模版、临时手写提示词的情况下 templateId 为空，
+  // templateLabel 也为空(前端显示成"自定义")。
+  templateId    String?
+  template      PosterTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  templateLabel String?
+  // 实际喂给 Seedream 的内容提示语，来自模版的 promptText，或者用户没选模版时
+  // 当次手写的一次性提示词。
+  promptText    String?
+  // 排版方式：title(标题+副标题两行字，宣传氛围类海报) | textBlocks(标题+任意多行
+  // 正文，价格表/知识卡片这种需要精确罗列具体文字内容的场景，见 poster_composer.py)。
+  layoutMode    String   @default("title")
+  // layoutMode=textBlocks 时才有值：JSON 数组，每一项是一行正文文字，支持
+  // "项目名|价格" 这种用竖线分隔的两栏格式(渲染时价格会右对齐)。
+  bodyLines     String?
+  // 出图风格，跟 Project.styleMode 是同一套 4 个值(comic/realistic/render3d/freeform)，
+  // 海报独立出来之后不能再借用某个项目的 styleMode，所以海报自己也存一份。
+  styleMode String   @default("comic")
+  title     String
+  subtitle  String?
+  // 用户在模版提示语之外想额外补充的描述，比如"夜晚，霓虹灯背景"，拼进最终 prompt。
+  extraPrompt String?
+  referenceImagePaths String?
+  backgroundPath String?
+  filePath  String?
+  status    String   @default("pending") // pending | running | completed | failed
+  error     String?
+  providerId String?
+  model     String?
+  createdAt DateTime @default(now())
+}
+
+// 海报"类型"模版库：医院海报/地陪翻译/科普知识/价格表/知识卡片……这些类型本质上都是
+// "一段内容提示语 + 一种排版方式"，不再写死在代码里，而是存成一条条可以自己增删改的
+// 模版，用户可以随时加新类型，不用等改代码发版。layoutMode 决定生成这张海报时用哪种
+// 排版：title(标题+副标题两行字，适合宣传氛围类海报) | textBlocks(标题+任意多行正文，
+// 适合价格表/知识卡片这种需要精确罗列具体文字内容的场景，见 poster_composer.py)。
+model PosterTemplate {
+  id         String   @id @default(cuid())
+  label      String
+  promptText String
+  layoutMode String   @default("title")
+  createdAt  DateTime @default(now())
+  posters    Poster[]
+}
+
+// 全局配置，单例表（约定只有一行，id 固定为 "singleton"）
+model Setting {
+  id              String   @id @default("singleton")
+  arkApiKey       String?  // 火山方舟 API Key，用于 Seedream/Seedance
+  // 普通按量付费账号用 https://ark.cn-beijing.volces.com/api/v3；
+  // "Ark Plan"套餐账号实际是 .../api/plan/v3，留空则用 ark_client.py 默认值。
+  arkBaseUrl      String?
+  // Ark 的模型 ID / 推理接入点经常因账号、地域而异（有的模型必须先在控制台
+  // "创建推理接入点"，调用时传 ep-xxxxxxxx 而不是裸模型名；Plan 套餐账号则是
+  // doubao-seedance-2.0 这种点号格式，不是带日期后缀的快照ID），留成可配置项，
+  // 不用每次都改代码。留空则用 ark_client.py 里的默认值。
+  arkImageModel   String?
+  arkVideoModel   String?
+  indexTtsBaseUrl String?  @default("http://10.39.64.13:7860") // 局域网 IndexTTS 服务地址
+
+  // 目录设置：生成产物（角色图/场景图/分镜图片视频配音）默认存在 <项目根目录>/output 下，
+  // 留空就是这个默认值；改了之后新生成的东西存到新目录，旧文件不会被搬过去，
+  // 但已经生成过的图片/视频还是能正常显示（paths.py 里做了"新旧目录都试一下"的兼容）。
+  outputDir String?
+
+  // 导出设置：成片默认往 outputDir/projects/{projectId} 里存；填了 exportDir
+  // 就直接存到这个目录，方便直接在桌面/指定文件夹里找到成片，不用去翻生成产物目录。
+  exportDir String?
+  // 导出时默认是否烧字幕，跟 POST /projects/{id}/export 请求体里显式传的 burnSubtitles
+  // 是两回事——请求体没传的时候才会用这个默认值兜底。
+  exportBurnSubtitles Boolean @default(true)
+
+  // 背景音乐：本地一个音频文件路径(mp3/wav/aac都行，ffmpeg 能读的格式都行)，导出时会
+  // 循环叠加到成片音轨下面(音量按 exportBgmVolume 调低)。跟"要不要烧字幕"同一个模式：
+  // exportUseBgm 是默认开关，导出请求体里显式传的 useBgm 覆盖它；exportBgmPath 没填
+  // 的话即使开着 exportUseBgm 也不会加(没有素材可加)。
+  exportBgmPath   String?
+  // 背景音乐相对音量，0~1 之间，成片原本的音轨(如果有的话，比如 Seedance 生成时带的
+  // 音效)保持原音量不变，背景音乐按这个系数降低，避免盖过对白/原始音效。
+  exportBgmVolume Float   @default(0.2)
+  exportUseBgm    Boolean @default(false)
+
+  // 下面 4 个是"自定义提示词"，落库是 JSON 文本，NULL 表示没自定义过、用代码里写死的
+  // 默认值(seedream.py 的 STYLE_PREFIXES / story_generator.py 的 STYLE_HINTS 和
+  // CONTENT_TYPE_HINTS / App.vue 的 PROJECT_TEMPLATES)。设置页填了才会覆盖，
+  // 格式和覆盖规则见 app/services/style_config.py 里的合并逻辑。
+  customStylePrefixes     String? // { comic, realistic, render3d, freeform } 图片生成硬前缀，按 key 覆盖
+  customStyleHints        String? // 同上 4 个 key，喂给 claude 写剧本的"画风参考"提示语
+  customContentTypeHints  String? // { character, no_character } 喂给 claude 的"要不要编人物"提示语
+  customProjectTemplates  String? // [{ id, label, contentType, styleMode }]，整份替换新建项目页的模板列表
+
+  // 海报标题/副标题文字是 Pillow 渲染叠上去的，需要一个真的支持中文字形的字体文件路径。
+  // 留空就走 poster_composer.py 按操作系统猜测的几个常见系统字体路径，猜不到就会在
+  // 生成海报时报清晰的错误，提示来这里手动填。
+  posterFontPath String?
+
+  updatedAt       DateTime @updatedAt
+}
+
+// 每一次生成调用的执行记录与状态机
+model Task {
+  id         String   @id @default(cuid())
+  targetType String   // story | storyboard | image | video | voice | compose | export
+  targetId   String
+  kind       String
+  status     String   @default("pending") // pending | running | completed | failed
+  error      String?
+  retryCount Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}

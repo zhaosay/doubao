@@ -1,0 +1,389 @@
+import json
+import os
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Prisma (apps/desktop/prisma/schema.prisma) 是 schema/迁移的唯一来源。
+# 这里只负责连接同一个 SQLite 文件，用原生 SQL 读写，不引入第二套 ORM schema。
+APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = APP_DIR.parent.parent.parent
+# 打包成 Windows 安装包之后，ai-service 源码跟 Electron 主程序不再共享同一个仓库
+# 目录结构（源码被塞进 resources/ai-service/，没有 apps/ai-service/../../data 这种
+# monorepo 相对路径可用），数据库也不该放在安装目录里（Windows 上安装目录通常
+# 没有写权限，而且卸载重装不该丢用户数据）。所以：Electron 主进程在打包模式下会
+# 通过 AI_MANJU_DB_PATH 环境变量传一个 userData 目录下的绝对路径进来；开发模式下
+# 不传这个变量，走原来的仓库相对路径，行为完全不变。
+_env_db_path = os.environ.get("AI_MANJU_DB_PATH")
+DB_PATH = Path(_env_db_path) if _env_db_path else REPO_ROOT / "data" / "app.db"
+
+
+def new_id() -> str:
+    # 不需要和 Prisma 的 cuid() 完全一致，只需要在这张表里唯一。
+    return uuid.uuid4().hex
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+DEFAULT_INDEXTTS_BASE_URL = "http://10.39.64.13:7860"
+
+
+# 下面 4 个"自定义提示词"字段落库是 JSON 文本(见 _ensure_startup_migrations 的
+# customStylePrefixes/customStyleHints/customContentTypeHints/customProjectTemplates 列)。
+# 约定：NULL/空 = 完全没自定义过，用代码里写死的默认值；非空就解析出来，跟默认值按 key
+# 合并覆盖(项目模板是整个列表替换，不是按 key 合并，因为它是一份有序列表不是字典)。
+_JSON_SETTING_KEYS = ("customStylePrefixes", "customStyleHints", "customContentTypeHints", "customProjectTemplates")
+
+
+def get_settings(conn: sqlite3.Connection) -> dict:
+    """读取单例 Setting 行，不存在则返回默认值（不落库，落库交给 PUT /settings）。"""
+    row = conn.execute('SELECT * FROM "Setting" WHERE id = ?', ("singleton",)).fetchone()
+    if row is None:
+        return {
+            "arkApiKey": None,
+            "arkBaseUrl": None,
+            "arkImageModel": None,
+            "arkVideoModel": None,
+            "indexTtsBaseUrl": DEFAULT_INDEXTTS_BASE_URL,
+            "outputDir": None,
+            "exportDir": None,
+            "exportBurnSubtitles": True,
+            "customStylePrefixes": None,
+            "customStyleHints": None,
+            "customContentTypeHints": None,
+            "customProjectTemplates": None,
+            "posterFontPath": None,
+        }
+    d = dict(row)
+    if not d.get("indexTtsBaseUrl"):
+        d["indexTtsBaseUrl"] = DEFAULT_INDEXTTS_BASE_URL
+    # SQLite 里 Boolean 落地是 0/1，这里转成真 bool，不然透传到前端 JSON 会变成数字 0/1
+    # 而不是 false/true，前端 v-model 绑 checkbox 就会出问题。
+    d["exportBurnSubtitles"] = bool(d.get("exportBurnSubtitles", True))
+    for key in _JSON_SETTING_KEYS:
+        raw = d.get(key)
+        if raw:
+            try:
+                d[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                d[key] = None
+        else:
+            d[key] = None
+    return d
+
+
+_startup_migration_checked = False
+
+
+def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
+    """兜底自愈：给已经建好的旧库补几个新加的列，不强制用户先手动跑
+    `npm run prisma:migrate`。只在进程生命周期内检查一次，很便宜。
+    这里只做"加列"这种不破坏数据的操作，改字段类型/删列还是得走 Prisma 迁移。
+    """
+    global _startup_migration_checked
+    if _startup_migration_checked:
+        return
+    cols = {r[1] for r in conn.execute('PRAGMA table_info("Shot")').fetchall()}
+    if "transitionToNext" not in cols:
+        conn.execute('ALTER TABLE "Shot" ADD COLUMN "transitionToNext" TEXT')
+        conn.commit()
+    if "emotion" not in cols:
+        conn.execute('ALTER TABLE "Shot" ADD COLUMN "emotion" TEXT')
+        conn.commit()
+    project_cols = {r[1] for r in conn.execute('PRAGMA table_info("Project")').fetchall()}
+    if "styleMode" not in project_cols:
+        conn.execute('ALTER TABLE "Project" ADD COLUMN "styleMode" TEXT NOT NULL DEFAULT \'comic\'')
+        conn.commit()
+    if "contentType" not in project_cols:
+        conn.execute('ALTER TABLE "Project" ADD COLUMN "contentType" TEXT NOT NULL DEFAULT \'character\'')
+        conn.commit()
+    if "lastExportedAt" not in project_cols:
+        # 记一下这个项目最近一次导出成片成功的时间，NULL = 还没导出过。项目列表用它来显示
+        # "已导出"标签——之前导出接口只是临时跑一遍 ffmpeg 返回结果，不落库，列表页完全
+        # 看不出哪些项目已经出过成片，哪些还没有。
+        conn.execute('ALTER TABLE "Project" ADD COLUMN "lastExportedAt" TEXT')
+        conn.commit()
+    character_cols = {r[1] for r in conn.execute('PRAGMA table_info("Character")').fetchall()}
+    if "prompt" not in character_cols:
+        conn.execute('ALTER TABLE "Character" ADD COLUMN "prompt" TEXT')
+        conn.commit()
+    setting_cols = {r[1] for r in conn.execute('PRAGMA table_info("Setting")').fetchall()}
+    for col in _JSON_SETTING_KEYS:
+        if col not in setting_cols:
+            conn.execute(f'ALTER TABLE "Setting" ADD COLUMN "{col}" TEXT')
+            conn.commit()
+    if "posterFontPath" not in setting_cols:
+        # 海报标题文字是代码(Pillow)渲染叠上去的，不是 AI 画的，需要一个真的支持中文的
+        # 字体文件——留空就走 poster_composer.py 里按操作系统猜测的几个常见系统字体路径，
+        # 猜不到就会在生成海报时报错，报错信息里会提示来这里手动填一个。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "posterFontPath" TEXT')
+        conn.commit()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    _POSTER_DDL_LEGACY_PRESET = """
+        CREATE TABLE "Poster" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "projectId" TEXT,
+            "presetId" TEXT NOT NULL,
+            "styleMode" TEXT NOT NULL DEFAULT 'comic',
+            "title" TEXT NOT NULL,
+            "subtitle" TEXT,
+            "extraPrompt" TEXT,
+            "referenceImagePaths" TEXT,
+            "backgroundPath" TEXT,
+            "filePath" TEXT,
+            "status" TEXT NOT NULL DEFAULT 'pending',
+            "error" TEXT,
+            "providerId" TEXT,
+            "model" TEXT,
+            "createdAt" TEXT NOT NULL,
+            CONSTRAINT "Poster_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+        )
+    """
+    # 中间形态(已废弃)：presetId 拆成 orientation(竖版/横版) + category(医院/地陪/自定义)，
+    # 只在这次会话短暂存在过，保留在这里纯粹是为了 _POSTER_DDL_CATEGORY 迁移分支能引用
+    # 到旧列名，不会有真实用户数据库停留在这个形态太久。
+    _POSTER_DDL_CATEGORY = """
+        CREATE TABLE "Poster" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "projectId" TEXT,
+            "orientation" TEXT NOT NULL DEFAULT 'portrait',
+            "category" TEXT NOT NULL DEFAULT 'hospital',
+            "customPrompt" TEXT,
+            "styleMode" TEXT NOT NULL DEFAULT 'comic',
+            "title" TEXT NOT NULL,
+            "subtitle" TEXT,
+            "extraPrompt" TEXT,
+            "referenceImagePaths" TEXT,
+            "backgroundPath" TEXT,
+            "filePath" TEXT,
+            "status" TEXT NOT NULL DEFAULT 'pending',
+            "error" TEXT,
+            "providerId" TEXT,
+            "model" TEXT,
+            "createdAt" TEXT NOT NULL,
+            CONSTRAINT "Poster_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+        )
+    """
+    # 当前 schema：category(医院/地陪/自定义)写死三选一被开放模版库取代——
+    # templateId 可选指向 PosterTemplate，templateLabel/promptText 是生成当下从模版
+    # 复制的快照，layoutMode+bodyLines 支持价格表/知识卡片这种多行正文排版。
+    _POSTER_DDL = """
+        CREATE TABLE "Poster" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "projectId" TEXT,
+            "orientation" TEXT NOT NULL DEFAULT 'portrait',
+            "templateId" TEXT,
+            "templateLabel" TEXT,
+            "promptText" TEXT,
+            "layoutMode" TEXT NOT NULL DEFAULT 'title',
+            "bodyLines" TEXT,
+            "styleMode" TEXT NOT NULL DEFAULT 'comic',
+            "title" TEXT NOT NULL,
+            "subtitle" TEXT,
+            "extraPrompt" TEXT,
+            "referenceImagePaths" TEXT,
+            "backgroundPath" TEXT,
+            "filePath" TEXT,
+            "status" TEXT NOT NULL DEFAULT 'pending',
+            "error" TEXT,
+            "providerId" TEXT,
+            "model" TEXT,
+            "createdAt" TEXT NOT NULL,
+            CONSTRAINT "Poster_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT "Poster_templateId_fkey" FOREIGN KEY ("templateId") REFERENCES "PosterTemplate" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+        )
+    """
+    # 预置模版文案，跟 prisma migration(20260811150000_poster_template_library)里的种子
+    # 数据保持一致——两条腿(Prisma migrate 给真实桌面应用用、这里的自愈迁移给
+    # ai-service 单跑/测试用)最终要落到同一份默认数据，用户体验不能因为走哪条路径
+    # 而不一样。
+    _DEFAULT_POSTER_TEMPLATES = [
+        (
+            "poster-tpl-hospital", "医院海报",
+            "医疗/医院宣传海报主视觉，专业、干净、值得信赖的医疗环境氛围，可以出现医护人员、"
+            "现代化医疗设备、明亮的医院环境等元素，色调明亮清爽。",
+            "title",
+        ),
+        (
+            "poster-tpl-guide", "地陪翻译海报",
+            "海外旅游地陪/医美陪同翻译服务宣传海报主视觉，专业亲切的服务氛围，可以出现地陪/"
+            "翻译人员微笑服务、旅游或医美机构场景等元素，色调温暖友好。",
+            "title",
+        ),
+        (
+            "poster-tpl-health", "医美科普海报",
+            "医美/医疗科普知识主视觉，专业权威、清晰易懂的视觉风格，画面简洁大方，适合承载"
+            "科普类图文内容，色调清新明亮。",
+            "title",
+        ),
+        (
+            "poster-tpl-price", "价格表海报",
+            "医美/医疗项目价格表海报主视觉，简洁大方的背景，画面留白干净适合叠加价格列表"
+            "文字，避免复杂花纹干扰阅读，色调专业沉稳。",
+            "textBlocks",
+        ),
+        (
+            "poster-tpl-card", "知识卡片",
+            "医美知识科普卡片主视觉，清爽简洁的卡片式背景，画面干净适合叠加多条知识点文字，"
+            "色调柔和易读。",
+            "textBlocks",
+        ),
+    ]
+
+    def _seed_default_poster_templates() -> None:
+        for tpl_id, label, prompt_text, layout_mode in _DEFAULT_POSTER_TEMPLATES:
+            conn.execute(
+                'INSERT INTO "PosterTemplate" (id, label, promptText, layoutMode, createdAt) '
+                "VALUES (?, ?, ?, ?, ?)",
+                (tpl_id, label, prompt_text, layout_mode, now_iso()),
+            )
+
+    if "PosterTemplate" not in tables:
+        # 模版库先于 Poster 建表：新 Poster 表的 templateId 外键要引用它。
+        # 类型(医院海报/地陪翻译/科普知识/价格表/知识卡片……)不再写死在代码里，改成
+        # 用户能自己增删改的一份清单，这里只是给冷启动预置几条覆盖常见场景。
+        conn.execute(
+            """
+            CREATE TABLE "PosterTemplate" (
+                "id" TEXT NOT NULL PRIMARY KEY,
+                "label" TEXT NOT NULL,
+                "promptText" TEXT NOT NULL,
+                "layoutMode" TEXT NOT NULL DEFAULT 'title',
+                "createdAt" TEXT NOT NULL
+            )
+            """
+        )
+        _seed_default_poster_templates()
+        conn.commit()
+    else:
+        template_cols = {r[1] for r in conn.execute('PRAGMA table_info("PosterTemplate")').fetchall()}
+        if "layoutMode" not in template_cols:
+            conn.execute('ALTER TABLE "PosterTemplate" ADD COLUMN "layoutMode" TEXT NOT NULL DEFAULT \'title\'')
+            conn.commit()
+
+    if "Poster" not in tables:
+        # 海报是独立的一级功能，不需要先建视频项目/写完剧本才能出海报。projectId 可选，
+        # 纯粹是"这张海报是照哪个视频项目的调子出的"这种备注性质的关联。
+        # backgroundPath 是 Seedream 生成的纯背景图(不含文字)，filePath 是叠了标题/副标题
+        # 文字之后的最终成品图；只改文字重新排版不用重新调 AI，靠这两个字段分开存。
+        conn.execute(_POSTER_DDL)
+        conn.execute('CREATE INDEX "Poster_projectId_idx" ON "Poster"("projectId")')
+        conn.execute('CREATE INDEX "Poster_templateId_idx" ON "Poster"("templateId")')
+        conn.commit()
+    else:
+        poster_cols = {r[1] for r in conn.execute('PRAGMA table_info("Poster")').fetchall()}
+        if "styleMode" not in poster_cols:
+            # 兼容这个功能刚上线那几天创建的旧 Poster 表(projectId 是必填外键，没有
+            # styleMode 列)——先原地升级到"带 presetId + styleMode"的中间形态，
+            # 不丢已经生成过的海报记录，下面的迁移会接着把它升到最新形态。
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute(_POSTER_DDL_LEGACY_PRESET.replace('"Poster"', '"new_Poster"', 1))
+            common_cols = ", ".join(
+                f'"{c}"' for c in [
+                    "id", "projectId", "presetId", "title", "subtitle", "extraPrompt",
+                    "referenceImagePaths", "backgroundPath", "filePath", "status", "error",
+                    "providerId", "model", "createdAt",
+                ]
+                if c in poster_cols
+            )
+            conn.execute(f'INSERT INTO "new_Poster" ({common_cols}) SELECT {common_cols} FROM "Poster"')
+            conn.execute('DROP TABLE "Poster"')
+            conn.execute('ALTER TABLE "new_Poster" RENAME TO "Poster"')
+            conn.execute('CREATE INDEX "Poster_projectId_idx" ON "Poster"("projectId")')
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.commit()
+            poster_cols = {r[1] for r in conn.execute('PRAGMA table_info("Poster")').fetchall()}
+        if "orientation" not in poster_cols:
+            # presetId -> orientation/category 迁移(中间形态)：旧的 poster_landscape 预设
+            # 映射成 landscape，其余映射成 portrait；category 老数据统一给 'hospital'。
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute(_POSTER_DDL_CATEGORY.replace('"Poster"', '"new_Poster"', 1))
+            has_preset = "presetId" in poster_cols
+            orientation_expr = (
+                "CASE WHEN \"presetId\" = 'poster_landscape' THEN 'landscape' ELSE 'portrait' END"
+                if has_preset else "'portrait'"
+            )
+            keep_cols = [
+                "id", "projectId", "styleMode", "title", "subtitle", "extraPrompt",
+                "referenceImagePaths", "backgroundPath", "filePath", "status", "error",
+                "providerId", "model", "createdAt",
+            ]
+            common_cols = ", ".join(f'"{c}"' for c in keep_cols if c in poster_cols)
+            select_cols = ", ".join(f'"{c}"' for c in keep_cols if c in poster_cols)
+            conn.execute(
+                f'INSERT INTO "new_Poster" ("orientation", "category", {common_cols}) '
+                f"SELECT {orientation_expr}, 'hospital', {select_cols} FROM \"Poster\""
+            )
+            conn.execute('DROP TABLE "Poster"')
+            conn.execute('ALTER TABLE "new_Poster" RENAME TO "Poster"')
+            conn.execute('CREATE INDEX "Poster_projectId_idx" ON "Poster"("projectId")')
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.commit()
+            poster_cols = {r[1] for r in conn.execute('PRAGMA table_info("Poster")').fetchall()}
+        if "templateId" not in poster_cols:
+            # category/customPrompt -> templateId/templateLabel/promptText/layoutMode/
+            # bodyLines 迁移：老数据没有模版可关联(templateId 留空)，但 promptText 尽量
+            # 保留原本的内容提示语，不让老海报"重新生成"时突然变成空提示词。
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute(_POSTER_DDL.replace('"Poster"', '"new_Poster"', 1))
+            has_category = "category" in poster_cols
+            template_label_expr = (
+                "CASE \"category\" WHEN 'hospital' THEN '医院海报' WHEN 'guide' THEN '地陪翻译海报' ELSE '自定义' END"
+                if has_category else "NULL"
+            )
+            prompt_text_expr = (
+                "CASE \"category\" "
+                "WHEN 'hospital' THEN '医疗/医院宣传海报主视觉，专业、干净、值得信赖的医疗环境氛围，"
+                "可以出现医护人员、现代化医疗设备、明亮的医院环境等元素，色调明亮清爽。' "
+                "WHEN 'guide' THEN '海外旅游地陪/医美陪同翻译服务宣传海报主视觉，专业亲切的服务氛围，"
+                "可以出现地陪/翻译人员微笑服务、旅游或医美机构场景等元素，色调温暖友好。' "
+                "ELSE \"customPrompt\" END"
+                if has_category else "NULL"
+            )
+            keep_cols = [
+                "id", "projectId", "orientation", "styleMode", "title", "subtitle", "extraPrompt",
+                "referenceImagePaths", "backgroundPath", "filePath", "status", "error",
+                "providerId", "model", "createdAt",
+            ]
+            common_cols = ", ".join(f'"{c}"' for c in keep_cols if c in poster_cols)
+            select_cols = ", ".join(f'"{c}"' for c in keep_cols if c in poster_cols)
+            conn.execute(
+                f'INSERT INTO "new_Poster" ("templateLabel", "promptText", "layoutMode", {common_cols}) '
+                f"SELECT {template_label_expr}, {prompt_text_expr}, 'title', {select_cols} FROM \"Poster\""
+            )
+            conn.execute('DROP TABLE "Poster"')
+            conn.execute('ALTER TABLE "new_Poster" RENAME TO "Poster"')
+            conn.execute('CREATE INDEX "Poster_projectId_idx" ON "Poster"("projectId")')
+            conn.execute('CREATE INDEX "Poster_templateId_idx" ON "Poster"("templateId")')
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.commit()
+    _startup_migration_checked = True
+
+
+@contextmanager
+def get_connection():
+    if not DB_PATH.exists():
+        raise RuntimeError(
+            f"数据库文件不存在: {DB_PATH}。请先在 apps/desktop 下运行 "
+            "`npm run prisma:migrate` 完成一次迁移，再启动 ai-service。"
+        )
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    # 注意：特意不开 WAL。WAL 需要共享内存锁，SQLite 官方文档明确说明它在网络文件系统上
+    # 不可靠；本机磁盘上没问题，但如果 data/ 目录被放进了 iCloud/OneDrive 之类的同步盘，
+    # WAL 也可能出问题。用默认 rollback journal + busy_timeout 更稳。
+    conn.execute("PRAGMA busy_timeout=10000")
+    try:
+        _ensure_startup_migrations(conn)
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
