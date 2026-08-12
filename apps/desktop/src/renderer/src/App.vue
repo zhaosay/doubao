@@ -4,11 +4,9 @@ import {
   BookOpen,
   Clapperboard,
   FileVideo2,
-  ImagePlus,
   Images,
   ListVideo,
   Settings,
-  Sparkles,
   Wand2
 } from '@lucide/vue'
 import { CINEMATOGRAPHY_MANUAL, type ManualEntry } from './cinematography'
@@ -715,6 +713,12 @@ const textImages = ref<TextImageItem[]>([])
 const textImageOrientations = ref<PosterOrientationOption[]>([])
 let textImageOrientationsLoaded = false
 const textImagesTab = ref<'list' | 'create'>('list')
+// 海报和文生图在侧栏合并成一个"文生图/海报"导航组(两者都是不挂项目、纯出图的
+// 独立功能，只是海报多一层标题/模版文字合成)——底层数据和页面逻辑仍然是两个
+// 独立视图('posters'/'textImages')，只是用这个状态记住"用户上次选的是哪一个"，
+// 侧栏的"新建文生图/海报""文生图/海报列表"两个按钮据此决定跳去哪个视图；
+// 两个页面头部各自的类型切换tab点了之后也会更新这个状态。
+const imageToolType = ref<'posters' | 'textImages'>('posters')
 const textImageForm = reactive({
   prompt: '',
   styleMode: 'comic' as StyleMode,
@@ -2273,40 +2277,43 @@ function statusLabel(status: string): string {
       </div>
       <nav class="sidebar-nav">
         <div class="sidebar-nav-group">
-        <span class="sidebar-nav-label">VIDEO</span>
+        <span class="sidebar-nav-label">短剧</span>
         <button
           :class="{ active: view === 'projects' && projectsTab === 'create' }"
           @click="view = 'projects'; projectsTab = 'create'"
         >
-          <FileVideo2 class="nav-icon" aria-hidden="true" /><span>一键生成视频</span>
+          <FileVideo2 class="nav-icon" aria-hidden="true" /><span>新建短剧</span>
         </button>
         <button
           :class="{ active: (view === 'projects' && projectsTab === 'list') || view === 'project' }"
           @click="view = 'projects'; projectsTab = 'list'"
         >
-          <ListVideo class="nav-icon" aria-hidden="true" /><span>剧本列表</span>
+          <ListVideo class="nav-icon" aria-hidden="true" /><span>短剧列表</span>
         </button>
         <button :class="{ active: view === 'manual' }" @click="view = 'manual'"><BookOpen class="nav-icon" aria-hidden="true" /><span>分镜与运镜手册</span></button>
         </div>
 
+        <!-- 海报和文生图都是不挂项目、纯出图的独立功能(海报多一层标题文字合成)，
+             合并成一组，具体是海报还是文生图由 imageToolType 记住上次选的那个，
+             两个页面头部各自还有类型切换tab，能在页面内部直接切换不用回侧栏。 -->
         <div class="sidebar-nav-group">
-        <span class="sidebar-nav-label">海报</span>
+        <span class="sidebar-nav-label">文生图/海报</span>
         <button
-          :class="{ active: view === 'posters' && postersTab === 'create' }"
-          @click="view = 'posters'; postersTab = 'create'"
+          :class="{ active: (view === 'posters' && postersTab === 'create') || (view === 'textImages' && textImagesTab === 'create') }"
+          @click="view = imageToolType; if (imageToolType === 'posters') { postersTab = 'create' } else { textImagesTab = 'create' }"
         >
-          <ImagePlus class="nav-icon" aria-hidden="true" /><span>新建海报</span>
+          <Wand2 class="nav-icon" aria-hidden="true" /><span>新建文生图/海报</span>
         </button>
         <button
-          :class="{ active: view === 'posters' && postersTab === 'list' }"
-          @click="view = 'posters'; postersTab = 'list'"
+          :class="{ active: (view === 'posters' && postersTab === 'list') || (view === 'textImages' && textImagesTab === 'list') }"
+          @click="view = imageToolType; if (imageToolType === 'posters') { postersTab = 'list' } else { textImagesTab = 'list' }"
         >
-          <Images class="nav-icon" aria-hidden="true" /><span>海报列表</span>
+          <Images class="nav-icon" aria-hidden="true" /><span>文生图/海报列表</span>
         </button>
         </div>
 
         <div class="sidebar-nav-group">
-        <span class="sidebar-nav-label">视频生成</span>
+        <span class="sidebar-nav-label">视频</span>
         <button
           :class="{ active: view === 'videoGen' && videoGenTab === 'create' }"
           @click="view = 'videoGen'; videoGenTab = 'create'"
@@ -2317,23 +2324,7 @@ function statusLabel(status: string): string {
           :class="{ active: view === 'videoGen' && videoGenTab === 'list' }"
           @click="view = 'videoGen'; videoGenTab = 'list'"
         >
-          <ListVideo class="nav-icon" aria-hidden="true" /><span>视频生成列表</span>
-        </button>
-        </div>
-
-        <div class="sidebar-nav-group">
-        <span class="sidebar-nav-label">文生图</span>
-        <button
-          :class="{ active: view === 'textImages' && textImagesTab === 'create' }"
-          @click="view = 'textImages'; textImagesTab = 'create'"
-        >
-          <Wand2 class="nav-icon" aria-hidden="true" /><span>新建文生图</span>
-        </button>
-        <button
-          :class="{ active: view === 'textImages' && textImagesTab === 'list' }"
-          @click="view = 'textImages'; textImagesTab = 'list'"
-        >
-          <Sparkles class="nav-icon" aria-hidden="true" /><span>文生图列表</span>
+          <ListVideo class="nav-icon" aria-hidden="true" /><span>视频列表</span>
         </button>
         </div>
 
@@ -2678,8 +2669,8 @@ function statusLabel(status: string): string {
     <section v-else-if="view === 'projects'" class="panel projects-page">
       <div class="projects-page-head">
         <div>
-          <h1>{{ projectsTab === 'create' ? '新建项目' : '项目列表' }}</h1>
-          <p class="hint">{{ projectsTab === 'create' ? '选一个模板，一句话说清楚想要什么' : '创建和管理 AI 漫剧项目' }}</p>
+          <h1>{{ projectsTab === 'create' ? '新建短剧' : '短剧列表' }}</h1>
+          <p class="hint">{{ projectsTab === 'create' ? '选一个模板，一句话说清楚想要什么' : '创建和管理 AI 短剧项目' }}</p>
         </div>
         <button v-if="projectsTab === 'list'" class="refresh" @click="loadProjects">刷新列表</button>
       </div>
@@ -2777,6 +2768,11 @@ function statusLabel(status: string): string {
           <p class="hint">{{ postersTab === 'create' ? '选朝向和类型模版（或自己写提示词），填标题，AI 只画背景，文字是程序渲染叠上去的' : '所有生成过的海报，不分项目' }}</p>
         </div>
         <button v-if="postersTab === 'list'" class="refresh" @click="loadPosters">刷新列表</button>
+      </div>
+
+      <div class="manual-tabs image-tool-switch">
+        <button class="manual-tab" :class="{ active: imageToolType === 'posters' }" @click="imageToolType = 'posters'">海报</button>
+        <button class="manual-tab" :class="{ active: imageToolType === 'textImages' }" @click="imageToolType = 'textImages'; view = 'textImages'">文生图</button>
       </div>
 
       <template v-if="postersTab === 'create'">
@@ -2986,7 +2982,7 @@ function statusLabel(status: string): string {
     <section v-else-if="view === 'videoGen'" class="panel posters-page">
       <div class="projects-page-head">
         <div>
-          <h1>{{ videoGenTab === 'create' ? '图生视频' : '视频生成列表' }}</h1>
+          <h1>{{ videoGenTab === 'create' ? '图生视频' : '视频列表' }}</h1>
           <p class="hint">{{ videoGenTab === 'create' ? '上传一张参考图 + 写一段画面/运镜描述，直接生成一条视频（不需要先建项目/写剧本）' : '所有生成过的视频，不分项目' }}</p>
         </div>
         <button v-if="videoGenTab === 'list'" class="refresh" @click="loadVideoGenerations">刷新列表</button>
@@ -3068,6 +3064,11 @@ function statusLabel(status: string): string {
           <p class="hint">{{ textImagesTab === 'create' ? '写一段画面描述直接出图，不做任何文字合成' : '所有生成过的图片，不分项目' }}</p>
         </div>
         <button v-if="textImagesTab === 'list'" class="refresh" @click="loadTextImages">刷新列表</button>
+      </div>
+
+      <div class="manual-tabs image-tool-switch">
+        <button class="manual-tab" :class="{ active: imageToolType === 'posters' }" @click="imageToolType = 'posters'; view = 'posters'">海报</button>
+        <button class="manual-tab" :class="{ active: imageToolType === 'textImages' }" @click="imageToolType = 'textImages'">文生图</button>
       </div>
 
       <template v-if="textImagesTab === 'create'">
@@ -4439,6 +4440,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .manual-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .manual-tab { background: white; color: #18181b; border: 1px solid #e4e4e7; padding: 4px 10px; font-size: 12px; }
 .manual-tab.active { background: #18181b; color: white; border-color: #18181b; }
+.image-tool-switch { margin-bottom: 16px; }
 .manual-search { max-width: 320px; }
 .manual-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
 .manual-entry {

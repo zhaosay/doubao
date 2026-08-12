@@ -168,6 +168,12 @@ def call_anthropic_api(
     这里统一拼上 /v1/messages——不同中转服务这段前缀不一样，做成整段可配置，
     跟 ark_client.py 里 arkBaseUrl 的处理思路一样。这个函数没有 `_` 前缀，因为
     settings.py 的"测试连通性"接口也要复用同一份调用逻辑，不想在两个地方各写一份。
+
+    鉴权同时带 x-api-key 和 Authorization: Bearer 两种头：官方 Anthropic API 认
+    x-api-key(对应 ANTHROPIC_API_KEY)，但不少国内"中转/代理"服务(比如 Claude
+    Code 自己认的 ANTHROPIC_AUTH_TOKEN 那一套)是走网关鉴权，只认 Authorization:
+    Bearer，不认 x-api-key。两个头都带上、服务端各取所需，不用让用户自己判断
+    "我这个中转服务到底吃哪种鉴权方式"。
     """
     url = f"{base_url.rstrip('/')}/v1/messages"
     try:
@@ -175,6 +181,7 @@ def call_anthropic_api(
             url,
             headers={
                 "x-api-key": api_key,
+                "authorization": f"Bearer {api_key}",
                 "anthropic-version": ANTHROPIC_API_VERSION,
                 "content-type": "application/json",
             },
