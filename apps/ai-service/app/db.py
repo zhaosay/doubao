@@ -29,7 +29,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-DEFAULT_INDEXTTS_BASE_URL = "http://10.39.64.13:7860"
+DEFAULT_INDEXTTS_BASE_URL = "http://localhost:7860"
 
 
 # 下面 4 个"自定义提示词"字段落库是 JSON 文本(见 _ensure_startup_migrations 的
@@ -60,6 +60,11 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "customContentTypeHints": None,
             "customProjectTemplates": None,
             "posterFontPath": None,
+            "storyGenProvider": "claude_cli",
+            "storyGenApiBaseUrl": None,
+            "storyGenApiKey": None,
+            "storyGenApiModel": None,
+            "storyGenApiMaxTokens": 4096,
         }
     d = dict(row)
     if not d.get("indexTtsBaseUrl"):
@@ -70,6 +75,10 @@ def get_settings(conn: sqlite3.Connection) -> dict:
     d["exportUseBgm"] = bool(d.get("exportUseBgm", False))
     if d.get("exportBgmVolume") is None:
         d["exportBgmVolume"] = 0.2
+    if not d.get("storyGenProvider"):
+        d["storyGenProvider"] = "claude_cli"
+    if d.get("storyGenApiMaxTokens") is None:
+        d["storyGenApiMaxTokens"] = 4096
     for key in _JSON_SETTING_KEYS:
         raw = d.get(key)
         if raw:
@@ -137,6 +146,23 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         conn.commit()
     if "exportUseBgm" not in setting_cols:
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "exportUseBgm" BOOLEAN NOT NULL DEFAULT 0')
+        conn.commit()
+    if "storyGenProvider" not in setting_cols:
+        # 剧本生成方式：claude_cli(默认，调本机 Claude Code CLI) | api(直连第三方
+        # Anthropic Messages API 兼容服务)，见 story_generator.py。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenProvider" TEXT NOT NULL DEFAULT \'claude_cli\'')
+        conn.commit()
+    if "storyGenApiBaseUrl" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiBaseUrl" TEXT')
+        conn.commit()
+    if "storyGenApiKey" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiKey" TEXT')
+        conn.commit()
+    if "storyGenApiModel" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiModel" TEXT')
+        conn.commit()
+    if "storyGenApiMaxTokens" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiMaxTokens" INTEGER NOT NULL DEFAULT 4096')
         conn.commit()
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     _POSTER_DDL_LEGACY_PRESET = """

@@ -241,7 +241,7 @@ model Setting {
   // 不用每次都改代码。留空则用 ark_client.py 里的默认值。
   arkImageModel   String?
   arkVideoModel   String?
-  indexTtsBaseUrl String?  @default("http://10.39.64.13:7860") // 局域网 IndexTTS 服务地址
+  indexTtsBaseUrl String?  @default("http://localhost:7860") // 局域网 IndexTTS 服务地址
 
   // 目录设置：生成产物（角色图/场景图/分镜图片视频配音）默认存在 <项目根目录>/output 下，
   // 留空就是这个默认值；改了之后新生成的东西存到新目录，旧文件不会被搬过去，
@@ -278,6 +278,22 @@ model Setting {
   // 留空就走 poster_composer.py 按操作系统猜测的几个常见系统字体路径，猜不到就会在
   // 生成海报时报清晰的错误，提示来这里手动填。
   posterFontPath String?
+
+  // 剧本生成方式：claude_cli(默认，调本机装好的 Claude Code CLI，免费但要求本机能跑
+  // 起来这个命令，Windows 上常见问题是压根没装/没登录) | api(改成直连一个 Anthropic
+  // Messages API 兼容的第三方中转/代理服务，填 Base URL + API Key + 模型名，不依赖
+  // 本机终端环境，Windows 上更稳)。默认值保持 claude_cli，不影响已经在用这个功能、
+  // 本机 Claude Code 环境跑得好好的用户(比如开发机)。
+  storyGenProvider     String  @default("claude_cli")
+  // 第三方 API 的 Base URL，约定填"到 /v1/messages 之前"那一段（比如
+  // https://your-proxy.com/api），代码会自动拼上 /v1/messages——不同中转服务这段前缀
+  // 不一样，做成整段可配置，跟 arkBaseUrl 是同一个思路。
+  storyGenApiBaseUrl   String?
+  storyGenApiKey       String?
+  // 模型名，比如 claude-sonnet-5——不同中转服务支持的模型名可能不是官方名字，留成
+  // 自由文本，不写死下拉选项。
+  storyGenApiModel     String?
+  storyGenApiMaxTokens Int     @default(4096)
 
   updatedAt       DateTime @updatedAt
 }

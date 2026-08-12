@@ -218,6 +218,20 @@ def _clear_story_scenes(conn, story_id: str) -> None:
     conn.execute('DELETE FROM "Scene" WHERE storyId = ?', (story_id,))
 
 
+def _build_story_provider_config(settings: dict) -> dict:
+    """把 Setting 表里的 storyGen* 字段整理成 generate_story_scenes 要的
+    provider_config 形状。settings 缺字段时(比如老库刚好没跑过自愈)一律退回
+    claude_cli，跟字段本身的默认值保持一致。
+    """
+    return {
+        "provider": settings.get("storyGenProvider") or "claude_cli",
+        "baseUrl": settings.get("storyGenApiBaseUrl"),
+        "apiKey": settings.get("storyGenApiKey"),
+        "model": settings.get("storyGenApiModel"),
+        "maxTokens": settings.get("storyGenApiMaxTokens"),
+    }
+
+
 def _run_story_generation(
     project_id: str,
     story_id: str,
@@ -226,6 +240,7 @@ def _run_story_generation(
     content_type: str,
     custom_style_hints: dict | None = None,
     custom_content_type_hints: dict | None = None,
+    provider_config: dict | None = None,
 ) -> None:
     try:
         scenes = generate_story_scenes(
@@ -234,6 +249,7 @@ def _run_story_generation(
             content_type=content_type,
             custom_style_hints=custom_style_hints,
             custom_content_type_hints=custom_content_type_hints,
+            provider_config=provider_config,
         )
 
         with get_connection() as conn:
@@ -291,6 +307,7 @@ def generate_story(project_id: str):
             project["contentType"],
             settings.get("customStyleHints"),
             settings.get("customContentTypeHints"),
+            _build_story_provider_config(settings),
         ),
         daemon=True,
     )

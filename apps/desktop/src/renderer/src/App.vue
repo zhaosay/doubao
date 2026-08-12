@@ -18,6 +18,21 @@ interface AiManjuBridge {
   openPath?: (filePath: string) => Promise<string>
   pickImageFile?: () => Promise<{ path: string; dataUrl: string | null } | null>
   readImagePreview?: (filePath: string) => Promise<string | null>
+  getUpdateStatus?: () => Promise<AppUpdateStatus>
+  checkForUpdates?: () => Promise<AppUpdateStatus>
+  downloadUpdate?: () => Promise<AppUpdateStatus>
+  installUpdate?: () => Promise<AppUpdateStatus>
+  openLatestRelease?: () => Promise<boolean>
+  onUpdateStatus?: (callback: (status: AppUpdateStatus) => void) => () => void
+}
+
+interface AppUpdateStatus {
+  currentVersion: string
+  packaged: boolean
+  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  message: string
+  latestVersion?: string
+  percent?: number
 }
 
 const aiManjuBridge = (window as unknown as { aiManju?: AiManjuBridge }).aiManju
@@ -35,6 +50,68 @@ const uiVersion = ref<UiVersion>('v2')
 // 会是 undefined，直接跳过不报错。shell.openPath 成功时 resolve 空字符串，失败时
 // resolve 一段错误文字（不是 throw），所以这里要手动判断返回值决定要不要报错。
 const openFileError = ref<string | null>(null)
+const updateStatus = ref<AppUpdateStatus>({
+  currentVersion: '0.1.5',
+  packaged: false,
+  state: 'idle',
+  message: '正在读取更新状态...'
+})
+let removeUpdateStatusListener: (() => void) | null = null
+
+const updateActionDisabled = computed(() => {
+  return updateStatus.value.state === 'checking' || updateStatus.value.state === 'downloading'
+})
+const updatePrimaryActionLabel = computed(() => {
+  if (updateStatus.value.state === 'checking') return '检查中…'
+  if (updateStatus.value.state === 'downloading') return `下载中 ${Math.round(updateStatus.value.percent ?? 0)}%`
+  if (updateStatus.value.state === 'available') return '下载更新'
+  if (updateStatus.value.state === 'downloaded') return '重启安装'
+  return '检查更新'
+})
+
+async function refreshUpdateStatus(): Promise<void> {
+  if (!aiManjuBridge?.getUpdateStatus) {
+    updateStatus.value = {
+      currentVersion: 'dev',
+      packaged: false,
+      state: 'error',
+      message: '当前环境不支持应用内更新'
+    }
+    return
+  }
+  updateStatus.value = await aiManjuBridge.getUpdateStatus()
+}
+
+async function checkForAppUpdate(): Promise<void> {
+  if (!aiManjuBridge?.checkForUpdates) return
+  updateStatus.value = await aiManjuBridge.checkForUpdates()
+}
+
+async function downloadAppUpdate(): Promise<void> {
+  if (!aiManjuBridge?.downloadUpdate) return
+  updateStatus.value = await aiManjuBridge.downloadUpdate()
+}
+
+async function installAppUpdate(): Promise<void> {
+  if (!aiManjuBridge?.installUpdate) return
+  updateStatus.value = await aiManjuBridge.installUpdate()
+}
+
+async function openLatestRelease(): Promise<void> {
+  await aiManjuBridge?.openLatestRelease?.()
+}
+
+async function runUpdatePrimaryAction(): Promise<void> {
+  if (updateStatus.value.state === 'available') {
+    await downloadAppUpdate()
+    return
+  }
+  if (updateStatus.value.state === 'downloaded') {
+    await installAppUpdate()
+    return
+  }
+  await checkForAppUpdate()
+}
 
 async function openInSystemViewer(filePath: string | null | undefined): Promise<void> {
   if (!filePath) return
@@ -352,6 +429,60 @@ const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
 
+// ---- 设置：剧本生成方式（本机 claude CLI 或第三方 Anthropic Messages API 兼容服务）----
+// 默认 claude_cli，跟后端 Setting.storyGenProvider 的默认值保持一致；只有用户主动
+// 配好第三方 API 并切换过来，才会改用 api 方式，避免"什么都没配就被切走"。
+const storyGenForm = reactive({
+  provider: 'claude_cli' as 'claude_cli' | 'api',
+  apiBaseUrl: '',
+  apiKey: '',
+  apiModel: '',
+  apiMaxTokens: 4096
+})
+const storyGenInfo = reactive({ apiKeySet: false, apiKeyMasked: '' })
+interface StoryGenTestState {
+  testing: boolean
+  result: { ok: boolean; message: string } | null
+}
+const storyGenCliTest = reactive<StoryGenTestState>({ testing: false, result: null })
+const storyGenApiTest = reactive<StoryGenTestState>({ testing: false, result: null })
+
+async function testStoryGenCli(): Promise<void> {
+  storyGenCliTest.testing = true
+  storyGenCliTest.result = null
+  try {
+    storyGenCliTest.result = await api('/settings/test-story-cli', { method: 'POST' })
+  } catch (err) {
+    storyGenCliTest.result = { ok: false, message: err instanceof Error ? err.message : String(err) }
+  } finally {
+    storyGenCliTest.testing = false
+  }
+}
+
+async function testStoryGenApi(): Promise<void> {
+  storyGenApiTest.testing = true
+  storyGenApiTest.result = null
+  try {
+    // baseUrl/model 不是敏感信息，表单里就是真实值，直接送当前填的（哪怕还没点保存），
+    // 这样改完还没保存也能先测；apiKey 是密码框，只有用户重新输入过才送新值，
+    // 留空就代表"沿用已保存的那份"，交给后端去补，跟 arkApiKey 的处理方式一致。
+    const body: Record<string, unknown> = {
+      baseUrl: storyGenForm.apiBaseUrl,
+      model: storyGenForm.apiModel,
+      maxTokens: storyGenForm.apiMaxTokens
+    }
+    if (storyGenForm.apiKey) body.apiKey = storyGenForm.apiKey
+    storyGenApiTest.result = await api('/settings/test-story-api', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    })
+  } catch (err) {
+    storyGenApiTest.result = { ok: false, message: err instanceof Error ? err.message : String(err) }
+  } finally {
+    storyGenApiTest.testing = false
+  }
+}
+
 // ---- 设置：自定义提示词（出图风格前缀 / 剧本写作风格提示 / 内容类型提示 / 项目模板）----
 // 这几个字段留空 = 用代码里写死的默认值，这里的常量只是给输入框当 placeholder 展示"默认值
 // 长什么样"，不是真的会被发送到后端——真正生效的默认值以 ai-service 里的
@@ -626,6 +757,12 @@ interface SettingsResponse {
   customStyleHints: Record<string, string> | null
   customContentTypeHints: Record<string, string> | null
   customProjectTemplates: (ProjectTemplateItem & { contentType: ContentType; styleMode: StyleMode })[] | null
+  storyGenProvider: 'claude_cli' | 'api'
+  storyGenApiBaseUrl: string | null
+  storyGenApiKey: string | null
+  storyGenApiKeySet: boolean
+  storyGenApiModel: string | null
+  storyGenApiMaxTokens: number
 }
 
 async function loadSettings(): Promise<void> {
@@ -643,6 +780,13 @@ async function loadSettings(): Promise<void> {
   settingsForm.exportBgmVolume = data.exportBgmVolume ?? 0.2
   settingsForm.exportUseBgm = data.exportUseBgm
   settingsForm.posterFontPath = data.posterFontPath ?? ''
+
+  storyGenForm.provider = data.storyGenProvider ?? 'claude_cli'
+  storyGenForm.apiBaseUrl = data.storyGenApiBaseUrl ?? ''
+  storyGenForm.apiModel = data.storyGenApiModel ?? ''
+  storyGenForm.apiMaxTokens = data.storyGenApiMaxTokens ?? 4096
+  storyGenInfo.apiKeySet = data.storyGenApiKeySet
+  storyGenInfo.apiKeyMasked = data.storyGenApiKey ?? ''
 
   const prefixes = data.customStylePrefixes ?? {}
   const styleHints = data.customStyleHints ?? {}
@@ -710,11 +854,17 @@ async function saveSettings(): Promise<void> {
       customStylePrefixes: serializeKeyMapField(customStylePrefixesForm),
       customStyleHints: serializeKeyMapField(customStyleHintsForm),
       customContentTypeHints: serializeKeyMapField(customContentTypeHintsForm),
-      customProjectTemplates: serializeProjectTemplatesField()
+      customProjectTemplates: serializeProjectTemplatesField(),
+      storyGenProvider: storyGenForm.provider,
+      storyGenApiBaseUrl: storyGenForm.apiBaseUrl,
+      storyGenApiModel: storyGenForm.apiModel,
+      storyGenApiMaxTokens: storyGenForm.apiMaxTokens
     }
     if (settingsForm.arkApiKey) body.arkApiKey = settingsForm.arkApiKey
+    if (storyGenForm.apiKey) body.storyGenApiKey = storyGenForm.apiKey
     await api('/settings', { method: 'PUT', body: JSON.stringify(body) })
     settingsForm.arkApiKey = ''
+    storyGenForm.apiKey = ''
     settingsSavedAt.value = new Date().toLocaleTimeString()
     await loadSettings()
   } catch (err) {
@@ -2072,12 +2222,17 @@ async function waitForBackendThenLoad(): Promise<void> {
 
 onMounted(() => {
   waitForBackendThenLoad()
+  refreshUpdateStatus().catch(() => {})
+  removeUpdateStatusListener = aiManjuBridge?.onUpdateStatus?.((status) => {
+    updateStatus.value = status
+  }) ?? null
   startPolling()
   window.addEventListener('keydown', handleSceneKeydown)
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  removeUpdateStatusListener?.()
   window.removeEventListener('keydown', handleSceneKeydown)
 })
 
@@ -2192,6 +2347,31 @@ function statusLabel(status: string): string {
         </span>
       </div>
 
+      <section class="settings-group settings-group-update">
+      <div class="settings-group-head"><div><h2>版本更新</h2><p>从 GitHub Release 检查并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
+      <div class="update-card">
+        <div>
+          <strong>{{ updateStatus.message }}</strong>
+          <p class="hint">
+            当前版本：{{ updateStatus.currentVersion }}
+            <template v-if="updateStatus.latestVersion"> · 最新版本：{{ updateStatus.latestVersion }}</template>
+          </p>
+          <div v-if="updateStatus.state === 'downloading'" class="update-progress">
+            <span :style="{ width: `${Math.max(0, Math.min(100, updateStatus.percent ?? 0))}%` }"></span>
+          </div>
+          <p v-if="updateStatus.state === 'error'" class="field-help">
+            私有 GitHub 仓库无法安全内置下载权限；如果自动更新失败，请打开 Release 手动下载。
+          </p>
+        </div>
+        <div class="update-actions">
+          <button :disabled="updateActionDisabled" @click="runUpdatePrimaryAction">
+            {{ updatePrimaryActionLabel }}
+          </button>
+          <button class="ghost" @click="openLatestRelease">打开 Release</button>
+        </div>
+      </div>
+      </section>
+
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head"><div><h2>模型服务</h2><p>生成图片、视频和配音所使用的服务</p></div><span>必填</span></div>
       <div class="field">
@@ -2235,8 +2415,65 @@ function statusLabel(status: string): string {
       </div>
       <div class="field">
         <label>IndexTTS 服务地址 <span class="field-badge">局域网配音</span></label>
-        <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://10.39.64.13:7860" />
+        <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://localhost:7860" />
       </div>
+      </section>
+
+      <section class="settings-group settings-group-primary">
+      <div class="settings-group-head">
+        <div><h2>AI生成剧本</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
+        <span>必填其一</span>
+      </div>
+      <div class="field">
+        <label>生成方式</label>
+        <select v-model="storyGenForm.provider">
+          <option value="claude_cli">本机 claude CLI（默认，需要本机装好 Claude Code 并登录）</option>
+          <option value="api">第三方 API（Anthropic Messages API 兼容，不依赖本机终端）</option>
+        </select>
+      </div>
+
+      <div v-if="storyGenForm.provider === 'claude_cli'" class="story-gen-test-block">
+        <button class="ghost" :disabled="storyGenCliTest.testing" @click="testStoryGenCli">
+          {{ storyGenCliTest.testing ? '测试中…' : '测试本机终端是否生效' }}
+        </button>
+        <p v-if="storyGenCliTest.result" :class="['story-gen-test-result', storyGenCliTest.result.ok ? 'ok' : 'error']">
+          {{ storyGenCliTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenCliTest.result.message }}
+        </p>
+        <p class="field-help">点这个按钮会真的调用一次本机 <code>claude</code> 命令。如果失败，把上面的报错信息发给开发者，或者直接切换成下面的第三方 API 方式。</p>
+      </div>
+
+      <template v-if="storyGenForm.provider === 'api'">
+        <div class="field">
+          <label>Base URL</label>
+          <input v-model="storyGenForm.apiBaseUrl" placeholder="https://your-proxy.example.com/api" />
+          <p class="field-help">到 <code>/v1/messages</code> 之前的那一段地址，具体以你的第三方服务商提供的文档为准。</p>
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input
+            v-model="storyGenForm.apiKey"
+            type="password"
+            :placeholder="storyGenInfo.apiKeySet ? `当前已设置：${storyGenInfo.apiKeyMasked}` : '还没设置'"
+          />
+        </div>
+        <div class="field">
+          <label>模型名</label>
+          <input v-model="storyGenForm.apiModel" placeholder="比如 claude-sonnet-5" />
+        </div>
+        <div class="field">
+          <label>最大输出 Token</label>
+          <input v-model.number="storyGenForm.apiMaxTokens" type="number" min="1" max="200000" style="max-width: 160px" />
+        </div>
+        <div class="story-gen-test-block">
+          <button class="ghost" :disabled="storyGenApiTest.testing" @click="testStoryGenApi">
+            {{ storyGenApiTest.testing ? '测试中…' : '测试连通性' }}
+          </button>
+          <p v-if="storyGenApiTest.result" :class="['story-gen-test-result', storyGenApiTest.result.ok ? 'ok' : 'error']">
+            {{ storyGenApiTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenApiTest.result.message }}
+          </p>
+          <p class="field-help">会用上面填的配置（哪怕还没点保存）真的发一次请求测试；API Key 留空表示沿用已保存的那份。</p>
+        </div>
+      </template>
       </section>
 
       <section class="settings-group">
@@ -3944,6 +4181,16 @@ body {
 .settings-state, .field-badge { font-size: 10px; }
 .field-help { margin: 0; font-size: 11px; color: #8a8a90; }
 .settings-doc summary { cursor: pointer; }
+.story-gen-test-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 0 14px; }
+.story-gen-test-result { margin: 0; font-size: 12px; line-height: 1.5; }
+.story-gen-test-result.ok { color: #16a34a; }
+.story-gen-test-result.error { color: #dc2626; }
+.update-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.update-card strong { font-size: 13px; }
+.update-card p { margin: 4px 0 0; }
+.update-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.update-progress { height: 7px; margin-top: 9px; overflow: hidden; border-radius: 999px; background: #e4e4e7; }
+.update-progress span { display: block; height: 100%; border-radius: inherit; background: #18181b; transition: width .2s ease; }
 input, textarea {
   font-family: inherit;
   font-size: 13px;
@@ -4735,6 +4982,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 18px; border: 1px solid #e4e4e7; border-radius: 13px; background: #fbfbfd;
 }
 .ui-v2 .settings-group-primary { background: white; }
+.ui-v2 .settings-group-update { grid-column: 1 / -1; background: white; }
 .ui-v2 .settings-group-head { margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #e4e4e7; }
 .ui-v2 .settings-group-head h2 { font-size: 16px; }
 .ui-v2 .settings-group-head p { color: #8a8a90; font-size: 12px; }
@@ -4772,6 +5020,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .settings-actions > div { display: flex; flex-direction: column; gap: 2px; }
 .ui-v2 .settings-actions > button { min-width: 132px; background: #18181b; color: white; font-weight: 700; }
+.ui-v2 .update-card { align-items: flex-start; }
+.ui-v2 .update-actions button { min-height: 34px; }
 .ui-v2 .project-title-row h2 { margin: 0; font-size: 15px; }
 .ui-v2 .premise-row { margin-top: 8px; align-items: center; }
 .ui-v2 .premise {
@@ -5057,11 +5307,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
   .ui-v2 .settings-group-primary, .ui-v2 .settings-actions { grid-column: auto; }
   .ui-v2 .settings-actions { align-items: stretch; flex-direction: column; }
+  .ui-v2 .update-card { align-items: stretch; flex-direction: column; }
+  .ui-v2 .update-actions { justify-content: flex-start; }
   .ui-v2 .manual-list { grid-template-columns: 1fr; }
   .ui-v2 .manual-search-row { align-items: stretch; flex-direction: column; }
   .ui-v2 .poster-create-layout { grid-template-columns: 1fr; }
   .ui-v2 .poster-preview-panel { position: static; }
   .ui-v2 .poster-preset-grid { grid-template-columns: 1fr 1fr; }
   .ui-v2 .poster-create-actions { align-items: stretch; flex-direction: column; }
+  .ui-v2 .text-image-create-panel { grid-template-columns: 1fr; }
+  .ui-v2 .text-image-preview-panel { position: static; }
+  .ui-v2 .text-image-options-grid { grid-template-columns: 1fr; }
+  .ui-v2 .text-image-ref-row { flex-direction: column; }
 }
 </style>
