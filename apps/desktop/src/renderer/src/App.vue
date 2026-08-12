@@ -1732,6 +1732,31 @@ const motionPromptManualGroups = buildManualOptionGroups(['movement', 'transitio
 // 跟运镜描述里那个更大的下拉（movement+transition+editing 混合）是两个不同的场景。
 const transitionManualGroups = buildManualOptionGroups(['transition'])
 
+// 图生视频只有一个"画面/运镜描述"输入框（不像分镜里画面描述/运镜描述是两个分开的字段），
+// 所以这里把 drawPrompt 那几类(构图/灯光/调色/焦距/导演风格)和 motionPrompt 那几类
+// (运镜/转场/镜头功能剪辑)合并成一个下拉，覆盖"分镜与运镜手册"里跟生成提示词相关的
+// 全部类别；情绪/景别是结构化字段的概念，负面词条是排除性质的，这两者都不适合直接拼进
+// 一段正向的生成提示词，所以不放进来。
+const videoGenManualGroups = buildManualOptionGroups([
+  'composition',
+  'lighting',
+  'color',
+  'lens',
+  'director',
+  'movement',
+  'transition',
+  'editing'
+])
+
+function onVideoGenManualSelectChange(event: Event): void {
+  const select = event.target as HTMLSelectElement
+  const value = select.value
+  select.value = ''
+  if (!value) return
+  const current = videoGenForm.prompt.trim()
+  videoGenForm.prompt = current ? `${current}，${value}` : value
+}
+
 type ShotTextField = 'sceneType' | 'drawPrompt' | 'motionPrompt' | 'emotion'
 
 function appendManualTerm(shot: Shot, field: ShotTextField, value: string): void {
@@ -2659,6 +2684,12 @@ function statusLabel(status: string): string {
           <div class="poster-step-head"><span>2</span><div><strong>画面/运镜描述</strong><small>喂给 Seedance 的提示词</small></div></div>
           <div class="field">
             <textarea v-model="videoGenForm.prompt" rows="4" placeholder="比如：镜头缓慢推进，女孩转头微笑，微风吹动头发" />
+            <select class="manual-inline-select" @change="onVideoGenManualSelectChange">
+              <option value="">+ 从分镜与运镜手册插入构图/灯光/调色/运镜/转场等术语…</option>
+              <optgroup v-for="g in videoGenManualGroups" :key="g.label" :label="g.label">
+                <option v-for="(opt, i) in g.options" :key="i" :value="opt.en">{{ opt.zh }}</option>
+              </optgroup>
+            </select>
           </div>
         </section>
 
