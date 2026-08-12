@@ -29,7 +29,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-DEFAULT_INDEXTTS_BASE_URL = "http://10.39.64.13:7860"
+DEFAULT_INDEXTTS_BASE_URL = "http://localhost:7860"
 
 
 # 下面 4 个"自定义提示词"字段落库是 JSON 文本(见 _ensure_startup_migrations 的

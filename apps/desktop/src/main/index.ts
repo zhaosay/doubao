@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from 'child_process'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { extname, join } from 'path'
 
@@ -10,8 +11,93 @@ import { extname, join } from 'path'
 app.setName('ai-manju-mvp')
 
 const AI_SERVICE_PORT = 8000
+const RELEASES_URL = 'https://github.com/zhaosay/doubao/releases/latest'
 
 let aiServiceProcess: ChildProcess | null = null
+let updaterReady = false
+let updateDownloaded = false
+
+interface AppUpdateStatus {
+  currentVersion: string
+  packaged: boolean
+  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  message: string
+  latestVersion?: string
+  percent?: number
+}
+
+let appUpdateStatus: AppUpdateStatus = {
+  currentVersion: app.getVersion(),
+  packaged: app.isPackaged,
+  state: 'idle',
+  message: app.isPackaged ? '点击检查 GitHub Release 更新' : '开发模式不支持自动更新'
+}
+
+function broadcastUpdateStatus(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('app-update-status', appUpdateStatus)
+  }
+}
+
+function setUpdateStatus(patch: Partial<AppUpdateStatus>): AppUpdateStatus {
+  appUpdateStatus = { ...appUpdateStatus, currentVersion: app.getVersion(), packaged: app.isPackaged, ...patch }
+  broadcastUpdateStatus()
+  return appUpdateStatus
+}
+
+function setupAutoUpdater(): void {
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.setFeedURL({
+    provider: 'github',
+    owner: 'zhaosay',
+    repo: 'doubao',
+    releaseType: 'release'
+  })
+
+  autoUpdater.on('checking-for-update', () => {
+    setUpdateStatus({ state: 'checking', message: '正在检查 GitHub Release...' })
+  })
+  autoUpdater.on('update-available', (info) => {
+    updateDownloaded = false
+    setUpdateStatus({
+      state: 'available',
+      latestVersion: info.version,
+      message: `发现新版本 ${info.version}，可以下载更新`
+    })
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    setUpdateStatus({
+      state: 'not-available',
+      latestVersion: info.version,
+      message: `当前已是最新版本 ${app.getVersion()}`
+    })
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    setUpdateStatus({
+      state: 'downloading',
+      percent: progress.percent,
+      message: `正在下载更新 ${Math.round(progress.percent)}%`
+    })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    updateDownloaded = true
+    setUpdateStatus({
+      state: 'downloaded',
+      latestVersion: info.version,
+      percent: 100,
+      message: `版本 ${info.version} 已下载，重启后安装`
+    })
+  })
+  autoUpdater.on('error', (err) => {
+    setUpdateStatus({
+      state: 'error',
+      message: `更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
+    })
+  })
+
+  updaterReady = true
+}
 
 function resolveAiServiceDir(): string {
   // out/main -> apps/desktop/out/main，往上三级到 apps/，再进 ai-service/
@@ -191,7 +277,50 @@ ipcMain.handle('read-image-preview', async (_event, filePath: string) => {
   return readImageAsDataUrl(filePath)
 })
 
+ipcMain.handle('app-update-status', async () => appUpdateStatus)
+
+ipcMain.handle('app-update-check', async () => {
+  if (!app.isPackaged) {
+    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
+  }
+  if (!updaterReady) setupAutoUpdater()
+  return autoUpdater.checkForUpdates()
+    .then(() => appUpdateStatus)
+    .catch((err) => setUpdateStatus({
+      state: 'error',
+      message: `检查更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
+    }))
+})
+
+ipcMain.handle('app-update-download', async () => {
+  if (!app.isPackaged) {
+    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
+  }
+  if (!updaterReady) setupAutoUpdater()
+  setUpdateStatus({ state: 'downloading', percent: 0, message: '正在下载更新 0%' })
+  return autoUpdater.downloadUpdate()
+    .then(() => appUpdateStatus)
+    .catch((err) => setUpdateStatus({
+      state: 'error',
+      message: `下载更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
+    }))
+})
+
+ipcMain.handle('app-update-install', async () => {
+  if (!updateDownloaded) {
+    return setUpdateStatus({ state: 'error', message: '更新包还没下载完成' })
+  }
+  setImmediate(() => autoUpdater.quitAndInstall(false, true))
+  return appUpdateStatus
+})
+
+ipcMain.handle('app-update-open-release', async () => {
+  await shell.openExternal(RELEASES_URL)
+  return true
+})
+
 app.whenReady().then(() => {
+  setupAutoUpdater()
   startAiService()
   createWindow()
 

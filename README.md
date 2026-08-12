@@ -63,7 +63,7 @@ Electron 窗口打开后，顶部会显示"后端 ok/error"——如果一直是
 1. **设置页**填两个东西：
    - 火山方舟(Ark) API Key —— Seedream/Seedance 用，去 <https://console.volcengine.com/ark> 申请
    - IndexTTS 服务地址 —— 默认填的是 PIPELINE.md 里记的局域网地址
-     `http://10.39.64.13:7860`，按需改成你自己的
+     `http://localhost:7860`，按需改成你自己的
 2. **项目**页新建一个项目，写一句话故事简介
 3. 进入项目详情，点「生成剧本」——这一步会在**本机终端**跑
    `claude -p ...`，需要你的机器上已经装好 Claude Code 并且登录过

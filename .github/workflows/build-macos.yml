@@ -43,6 +43,8 @@ jobs:
           path: |
             apps/desktop/dist/*.dmg
             apps/desktop/dist/*-mac.zip
+            apps/desktop/dist/latest-mac.yml
+            apps/desktop/dist/*.blockmap
           if-no-files-found: error
 
       - name: 发布到 GitHub Release（只在 push tag 时触发）
@@ -52,4 +54,6 @@ jobs:
           files: |
             apps/desktop/dist/*.dmg
             apps/desktop/dist/*-mac.zip
+            apps/desktop/dist/latest-mac.yml
+            apps/desktop/dist/*.blockmap
           generate_release_notes: true

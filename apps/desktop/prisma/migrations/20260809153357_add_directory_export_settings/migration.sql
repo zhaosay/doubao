@@ -7,7 +7,7 @@ CREATE TABLE "new_Setting" (
     "arkBaseUrl" TEXT,
     "arkImageModel" TEXT,
     "arkVideoModel" TEXT,
-    "indexTtsBaseUrl" TEXT DEFAULT 'http://10.39.64.13:7860',
+    "indexTtsBaseUrl" TEXT DEFAULT 'http://localhost:7860',
     "outputDir" TEXT,
     "exportDir" TEXT,
     "exportBurnSubtitles" BOOLEAN NOT NULL DEFAULT true,
