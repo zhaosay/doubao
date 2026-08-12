@@ -2,8 +2,14 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <!-- M0 阶段 CSP 放宽以保证 Vite dev/HMR 可用，打包发布前需要收紧 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' ws: http://127.0.0.1:8000; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: http://127.0.0.1:8000" />
+    <!-- M0 阶段 CSP 放宽以保证 Vite dev/HMR 可用，打包发布前需要收紧。
+         img-src 曾经没有单独声明，会退回 default-src（没有 data:），导致所有本地
+         参考图预览缩略图(pathPreviewCache 里存的 data:image/... base64)在渲染进程
+         被 CSP 静默拦截——不报 JS 异常、不触发任何 onerror 回调，表现就是"选完图/
+         重新打开项目，缩略图完全不出来，也没有任何报错"，在 Windows 和 macOS 上
+         都是同一个原因，跟文件权限无关。补上 data: 和 ai-service 的 127.0.0.1:8000
+         (给 /files/... 生成产物的图片/视频用)两个来源。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' ws: http://127.0.0.1:8000; script-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: http://127.0.0.1:8000; connect-src 'self' ws: http://127.0.0.1:8000" />
     <title>AI视频工作台</title>
   </head>
   <body>
