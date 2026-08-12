@@ -26,3 +26,6 @@ apps/ai-service/**/__pycache__/
 .env.*
 *.pem
 *.key
+
+# 本地下载的发布安装包，不提交到仓库
+release/
