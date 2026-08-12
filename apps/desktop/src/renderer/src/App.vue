@@ -51,7 +51,7 @@ const uiVersion = ref<UiVersion>('v2')
 // resolve 一段错误文字（不是 throw），所以这里要手动判断返回值决定要不要报错。
 const openFileError = ref<string | null>(null)
 const updateStatus = ref<AppUpdateStatus>({
-  currentVersion: '0.1.5',
+  currentVersion: '0.1.8',
   packaged: false,
   state: 'idle',
   message: '正在读取更新状态...'
@@ -2380,7 +2380,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'about'">
       <section class="settings-group settings-group-update">
-      <div class="settings-group-head"><div><h2>版本更新</h2><p>从 GitHub Release 检查并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
+      <div class="settings-group-head"><div><h2>版本更新</h2><p>启动时自动检查 GitHub Release，新版会自动下载</p></div><span>{{ updateStatus.currentVersion }}</span></div>
       <div class="update-card">
         <div>
           <strong>{{ updateStatus.message }}</strong>
@@ -2392,7 +2392,7 @@ function statusLabel(status: string): string {
             <span :style="{ width: `${Math.max(0, Math.min(100, updateStatus.percent ?? 0))}%` }"></span>
           </div>
           <p v-if="updateStatus.state === 'error'" class="field-help">
-            私有 GitHub 仓库无法安全内置下载权限；如果自动更新失败，请打开 Release 手动下载。
+            如果自动更新失败，请打开 Release 手动下载。
           </p>
         </div>
         <div class="update-actions">

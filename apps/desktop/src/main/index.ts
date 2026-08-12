@@ -16,6 +16,10 @@ const RELEASES_URL = 'https://github.com/zhaosay/doubao/releases/latest'
 let aiServiceProcess: ChildProcess | null = null
 let updaterReady = false
 let updateDownloaded = false
+let startupUpdateCheckScheduled = false
+let updateCheckRunning = false
+let updateDownloadRunning = false
+let updateInstallPromptShown = false
 
 interface AppUpdateStatus {
   currentVersion: string
@@ -30,7 +34,12 @@ let appUpdateStatus: AppUpdateStatus = {
   currentVersion: app.getVersion(),
   packaged: app.isPackaged,
   state: 'idle',
-  message: app.isPackaged ? '点击检查 GitHub Release 更新' : '开发模式不支持自动更新'
+  message: app.isPackaged ? '启动后会自动检查 GitHub Release 更新' : '开发模式不支持自动更新'
+}
+
+function getUpdateErrorMessage(action: string, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err)
+  return `${action}失败：${detail}。请打开 Release 手动下载。`
 }
 
 function broadcastUpdateStatus(): void {
@@ -60,11 +69,13 @@ function setupAutoUpdater(): void {
   })
   autoUpdater.on('update-available', (info) => {
     updateDownloaded = false
+    updateInstallPromptShown = false
     setUpdateStatus({
       state: 'available',
       latestVersion: info.version,
-      message: `发现新版本 ${info.version}，可以下载更新`
+      message: `发现新版本 ${info.version}，正在自动下载`
     })
+    void downloadAppUpdate(true)
   })
   autoUpdater.on('update-not-available', (info) => {
     setUpdateStatus({
@@ -88,15 +99,95 @@ function setupAutoUpdater(): void {
       percent: 100,
       message: `版本 ${info.version} 已下载，重启后安装`
     })
+    void promptInstallDownloadedUpdate(info.version)
   })
   autoUpdater.on('error', (err) => {
     setUpdateStatus({
       state: 'error',
-      message: `更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
+      message: getUpdateErrorMessage('更新', err)
     })
   })
 
   updaterReady = true
+}
+
+async function promptInstallDownloadedUpdate(version?: string): Promise<void> {
+  if (updateInstallPromptShown) return
+  updateInstallPromptShown = true
+
+  const focusedWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const options = {
+    type: 'info' as const,
+    buttons: ['立即重启安装', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    title: '更新已下载',
+    message: version ? `新版本 ${version} 已下载完成` : '新版本已下载完成',
+    detail: '重启应用后会自动安装更新。'
+  }
+  const result = focusedWindow
+    ? await dialog.showMessageBox(focusedWindow, options)
+    : await dialog.showMessageBox(options)
+
+  if (result.response === 0) {
+    autoUpdater.quitAndInstall(false, true)
+  }
+}
+
+async function checkForAppUpdate(manual = false): Promise<AppUpdateStatus> {
+  if (!app.isPackaged) {
+    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
+  }
+  if (updateCheckRunning || updateDownloadRunning) return appUpdateStatus
+  if (!updaterReady) setupAutoUpdater()
+
+  updateCheckRunning = true
+  if (manual) setUpdateStatus({ state: 'checking', message: '正在检查 GitHub Release...' })
+  try {
+    await autoUpdater.checkForUpdates()
+    return appUpdateStatus
+  } catch (err) {
+    return setUpdateStatus({
+      state: 'error',
+      message: getUpdateErrorMessage('检查更新', err)
+    })
+  } finally {
+    updateCheckRunning = false
+  }
+}
+
+async function downloadAppUpdate(auto = false): Promise<AppUpdateStatus> {
+  if (!app.isPackaged) {
+    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
+  }
+  if (updateDownloadRunning) return appUpdateStatus
+  if (!updaterReady) setupAutoUpdater()
+
+  updateDownloadRunning = true
+  setUpdateStatus({
+    state: 'downloading',
+    percent: 0,
+    message: auto ? '发现新版本，正在自动下载 0%' : '正在下载更新 0%'
+  })
+  try {
+    await autoUpdater.downloadUpdate()
+    return appUpdateStatus
+  } catch (err) {
+    return setUpdateStatus({
+      state: 'error',
+      message: getUpdateErrorMessage('下载更新', err)
+    })
+  } finally {
+    updateDownloadRunning = false
+  }
+}
+
+function scheduleStartupUpdateCheck(): void {
+  if (!app.isPackaged || startupUpdateCheckScheduled) return
+  startupUpdateCheckScheduled = true
+  setTimeout(() => {
+    void checkForAppUpdate(false)
+  }, 4000)
 }
 
 function resolveAiServiceDir(): string {
@@ -194,7 +285,7 @@ function stopAiService(): void {
   }
 }
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -213,6 +304,8 @@ function createWindow(): void {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return win
 }
 
 // 双击生成的图片/视频/音频缩略图，用系统默认程序打开原文件（跟 Finder 里双击一样）。
@@ -279,32 +372,9 @@ ipcMain.handle('read-image-preview', async (_event, filePath: string) => {
 
 ipcMain.handle('app-update-status', async () => appUpdateStatus)
 
-ipcMain.handle('app-update-check', async () => {
-  if (!app.isPackaged) {
-    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
-  }
-  if (!updaterReady) setupAutoUpdater()
-  return autoUpdater.checkForUpdates()
-    .then(() => appUpdateStatus)
-    .catch((err) => setUpdateStatus({
-      state: 'error',
-      message: `检查更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
-    }))
-})
+ipcMain.handle('app-update-check', async () => checkForAppUpdate(true))
 
-ipcMain.handle('app-update-download', async () => {
-  if (!app.isPackaged) {
-    return setUpdateStatus({ state: 'error', message: '开发模式不支持自动更新，请打包后测试' })
-  }
-  if (!updaterReady) setupAutoUpdater()
-  setUpdateStatus({ state: 'downloading', percent: 0, message: '正在下载更新 0%' })
-  return autoUpdater.downloadUpdate()
-    .then(() => appUpdateStatus)
-    .catch((err) => setUpdateStatus({
-      state: 'error',
-      message: `下载更新失败：${err.message || String(err)}。如果仓库是 Private，请手动打开 Release 下载。`
-    }))
-})
+ipcMain.handle('app-update-download', async () => downloadAppUpdate(false))
 
 ipcMain.handle('app-update-install', async () => {
   if (!updateDownloaded) {
@@ -322,7 +392,8 @@ ipcMain.handle('app-update-open-release', async () => {
 app.whenReady().then(() => {
   setupAutoUpdater()
   startAiService()
-  createWindow()
+  const win = createWindow()
+  win.webContents.once('did-finish-load', scheduleStartupUpdateCheck)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
