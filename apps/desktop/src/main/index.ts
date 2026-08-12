@@ -326,16 +326,33 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
 }
 
 // 读本地图片文件转成 data URI，pick-image-file(刚选完的那张)和 read-image-preview
-// (回显已经存在的路径，比如上次生成/上次保存的参考图)共用同一份逻辑。
-function readImageAsDataUrl(filePath: string): string | null {
-  try {
-    const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
-    const base64 = readFileSync(filePath).toString('base64')
-    return `data:${mime};base64,${base64}`
-  } catch (err) {
-    console.error(`[readImageAsDataUrl] 读文件失败(${filePath}):`, err)
-    return null
+// (回显已经存在的路径，比如上次生成/上次保存的参考图)共用同一份逻辑。这里改成
+// 失败就抛异常(不在这里吞掉)，因为两个调用方对"要不要告诉用户"的需求不一样：
+// pick-image-file 是用户刚点了"选择文件"这个主动操作，读失败必须给出看得懂的原因，
+// 不然就是"路径填上了但缩略图消失"这种莫名其妙的体验(实际踩过的例子见下面
+// describeReadImageError)；read-image-preview 是页面刷新/重新打开时后台批量
+// 补一遍已存路径的预览图，失败了静默返回 null 就行，不用每张图都弹提示。
+function readImageAsDataUrl(filePath: string): string {
+  const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+  const base64 = readFileSync(filePath).toString('base64')
+  return `data:${mime};base64,${base64}`
+}
+
+// 把 Node 的原始报错转成用户能看懂、能照着做的提示，按平台给不同建议——
+// macOS 上"桌面/文稿/下载/照片"这几个目录有额外的隐私保护，没有拿到"完全磁盘
+// 访问权限"的未签名 App 读取里面的文件会报 EPERM，是实测踩到的真实案例
+// (选完图，输入框里路径文字有，但缩略图读不出来)；Windows 上对应的常见坑
+// 换成了 OneDrive"仅联机"占位文件(本地根本没有实际字节，读会报错)和杀毒软件/
+// 文件占用拦截，报错关键字不一样，给不同的排查建议。
+function describeReadImageError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  if (process.platform === 'darwin' && /eperm|not permitted/i.test(message)) {
+    return `${message}(可能是 macOS 隐私权限限制：桌面/文稿/下载/照片这几个目录，未获得"完全磁盘访问权限"的 App 读取里面的文件会被系统拦下。可以把图片挪到其他文件夹再选，或者去 系统设置 > 隐私与安全性 > 完全磁盘访问权限 里给这个 App 授权。)`
   }
+  if (process.platform === 'win32' && /ebusy|eperm|access is denied/i.test(message)) {
+    return `${message}(可能是文件被其他程序占用、被杀毒软件拦截，或者是 OneDrive"仅联机"文件还没同步到本地——右键这个文件选"始终保留在此设备上"再试一次。)`
+  }
+  return message
 }
 
 // 参考图"上传"本质是"选一个本机已有的文件"：原生系统选择框选完直接拿到绝对路径，
@@ -356,7 +373,12 @@ ipcMain.handle('pick-image-file', async () => {
   })
   if (result.canceled || result.filePaths.length === 0) return null
   const filePath = result.filePaths[0]
-  return { path: filePath, dataUrl: readImageAsDataUrl(filePath) }
+  try {
+    return { path: filePath, dataUrl: readImageAsDataUrl(filePath), error: null }
+  } catch (err) {
+    console.error(`[pick-image-file] 读文件失败(${filePath}):`, err)
+    return { path: filePath, dataUrl: null, error: `读取图片失败：${describeReadImageError(err)}` }
+  }
 })
 
 // 上面那个只在"刚选完文件"那一刻返回预览图——之前的问题是：参考图路径存进后端之后，
@@ -367,7 +389,12 @@ ipcMain.handle('pick-image-file', async () => {
 // 显示"预览不可用"而不是报错崩掉。
 ipcMain.handle('read-image-preview', async (_event, filePath: string) => {
   if (!filePath || !existsSync(filePath)) return null
-  return readImageAsDataUrl(filePath)
+  try {
+    return readImageAsDataUrl(filePath)
+  } catch (err) {
+    console.error(`[read-image-preview] 读文件失败(${filePath}):`, err)
+    return null
+  }
 })
 
 ipcMain.handle('app-update-status', async () => appUpdateStatus)

@@ -7,7 +7,7 @@ import type { IpcRendererEvent } from 'electron'
 contextBridge.exposeInMainWorld('aiManju', {
   apiBaseUrl: 'http://127.0.0.1:8000',
   openPath: (filePath: string): Promise<string> => ipcRenderer.invoke('open-path', filePath),
-  pickImageFile: (): Promise<{ path: string; dataUrl: string | null } | null> =>
+  pickImageFile: (): Promise<{ path: string; dataUrl: string | null; error?: string | null } | null> =>
     ipcRenderer.invoke('pick-image-file'),
   readImagePreview: (filePath: string): Promise<string | null> =>
     ipcRenderer.invoke('read-image-preview', filePath),

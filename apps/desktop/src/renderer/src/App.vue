@@ -14,7 +14,7 @@ import { CINEMATOGRAPHY_MANUAL, type ManualEntry } from './cinematography'
 interface AiManjuBridge {
   apiBaseUrl: string
   openPath?: (filePath: string) => Promise<string>
-  pickImageFile?: () => Promise<{ path: string; dataUrl: string | null } | null>
+  pickImageFile?: () => Promise<{ path: string; dataUrl: string | null; error?: string | null } | null>
   readImagePreview?: (filePath: string) => Promise<string | null>
   getUpdateStatus?: () => Promise<AppUpdateStatus>
   checkForUpdates?: () => Promise<AppUpdateStatus>
@@ -185,8 +185,12 @@ async function pickReferenceFile(record: Record<string, string>, key: string, mu
   const picked = await aiManjuBridge.pickImageFile()
   if (!picked) return
   // 主进程选完文件时已经顺手读出了 data URI，直接拿来填缓存，不用再让 ensurePathPreview
-  // 多问主进程读一次盘。
+  // 多问主进程读一次盘。picked.error 有值说明路径选上了但读文件失败(常见于 macOS
+  // 桌面/文稿/下载目录的隐私权限限制)——路径还是照样填进输入框(不影响生成，Python
+  // 侧读同一个文件路径是另一套权限体系)，只是提示一下"为什么这张图看不到缩略图"，
+  // 不然用户只会看到"路径填上了但缩略图消失"，完全摸不着头脑。
   pathPreviewCache[picked.path] = picked.dataUrl
+  if (picked.error) openFileError.value = picked.error
   if (multiple) {
     const current = (record[key] ?? '').trim()
     record[key] = current ? `${current},${picked.path}` : picked.path
