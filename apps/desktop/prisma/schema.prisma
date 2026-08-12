@@ -29,6 +29,8 @@ model Project {
   lastExportedAt DateTime?
   story     Story?
   posters   Poster[]
+  videoGenerations VideoGeneration[]
+  textImages       TextImage[]
 }
 
 // AI 生成的完整剧本文本，1个Project对应1份Story，可重新生成覆盖
@@ -185,6 +187,45 @@ model PosterTemplate {
   layoutMode String   @default("title")
   createdAt  DateTime @default(now())
   posters    Poster[]
+}
+
+// 无剧本图生视频：独立的一级功能，不需要先建视频项目/写剧本/拆场次镜头——上传一张
+// 参考图 + 写一段画面/运镜描述，直接调 Seedance 图生视频出一条视频。跟"分镜里的
+// 生成视频"用的是同一个 Seedance 接口，只是跳过了 Project/Story/Scene/Shot 那一整套
+// 结构，也不做配音/字幕/多段拼接——单张参考图进，单条视频出，最快最简单的路径。
+// projectId 跟 Poster 一样是可选的备注性关联，不影响生成逻辑。
+model VideoGeneration {
+  id        String   @id @default(cuid())
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  referenceImagePath String // 本地图片文件绝对路径，用作图生视频的起始帧
+  prompt    String // 画面/运镜描述，直接喂给 Seedance
+  filePath  String?
+  status    String   @default("pending") // pending | running | completed | failed
+  error     String?
+  providerId String?
+  model     String?
+  createdAt DateTime @default(now())
+}
+
+// 独立文生图：同样不挂在任何 Project/Story 下，纯粹"写一段描述 -> 出一张图"，
+// 跟 Poster 共用同一套出图风格前缀(styleMode)和画幅(orientation)概念，但不做
+// 标题/副标题文字合成——生成结果就是 Seedream 出的原图，不做二次加工。
+model TextImage {
+  id        String   @id @default(cuid())
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  prompt    String
+  orientation String @default("portrait") // portrait(竖版) | landscape(横版)，跟海报同一套
+  styleMode String   @default("comic")
+  // 逗号分隔的本地参考图路径，可选——不传就是纯文生图，传了就是图生图(风格/构图参考)。
+  referenceImagePaths String?
+  filePath  String?
+  status    String   @default("pending") // pending | running | completed | failed
+  error     String?
+  providerId String?
+  model     String?
+  createdAt DateTime @default(now())
 }
 
 // 全局配置，单例表（约定只有一行，id 固定为 "singleton"）

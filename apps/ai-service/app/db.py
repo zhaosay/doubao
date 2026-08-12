@@ -377,6 +377,56 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
             conn.execute('CREATE INDEX "Poster_templateId_idx" ON "Poster"("templateId")')
             conn.execute("PRAGMA foreign_keys=ON")
             conn.commit()
+
+    if "VideoGeneration" not in tables:
+        # 无剧本图生视频：独立一级功能，跟 Poster 一样不挂在任何 Project 下也能用，
+        # projectId 只是可选的备注性关联。单张参考图 + 一段描述，直接调 Seedance
+        # 出一条视频，不经过 Story/Scene/Shot 那一整套结构。
+        conn.execute(
+            """
+            CREATE TABLE "VideoGeneration" (
+                "id" TEXT NOT NULL PRIMARY KEY,
+                "projectId" TEXT,
+                "referenceImagePath" TEXT NOT NULL,
+                "prompt" TEXT NOT NULL,
+                "filePath" TEXT,
+                "status" TEXT NOT NULL DEFAULT 'pending',
+                "error" TEXT,
+                "providerId" TEXT,
+                "model" TEXT,
+                "createdAt" TEXT NOT NULL,
+                CONSTRAINT "VideoGeneration_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+            """
+        )
+        conn.execute('CREATE INDEX "VideoGeneration_projectId_idx" ON "VideoGeneration"("projectId")')
+        conn.commit()
+
+    if "TextImage" not in tables:
+        # 独立文生图：同样不挂在 Project 下，纯"写描述 -> 出图"，跟海报共用出图风格
+        # 前缀(styleMode)和画幅(orientation)概念，但不做标题文字合成。
+        conn.execute(
+            """
+            CREATE TABLE "TextImage" (
+                "id" TEXT NOT NULL PRIMARY KEY,
+                "projectId" TEXT,
+                "prompt" TEXT NOT NULL,
+                "orientation" TEXT NOT NULL DEFAULT 'portrait',
+                "styleMode" TEXT NOT NULL DEFAULT 'comic',
+                "referenceImagePaths" TEXT,
+                "filePath" TEXT,
+                "status" TEXT NOT NULL DEFAULT 'pending',
+                "error" TEXT,
+                "providerId" TEXT,
+                "model" TEXT,
+                "createdAt" TEXT NOT NULL,
+                CONSTRAINT "TextImage_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+            )
+            """
+        )
+        conn.execute('CREATE INDEX "TextImage_projectId_idx" ON "TextImage"("projectId")')
+        conn.commit()
+
     _startup_migration_checked = True
 
 

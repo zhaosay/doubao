@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { BookOpen, FileVideo2, ImagePlus, Images, ListVideo, Settings } from '@lucide/vue'
+import {
+  BookOpen,
+  Clapperboard,
+  FileVideo2,
+  ImagePlus,
+  Images,
+  ListVideo,
+  Settings,
+  Sparkles,
+  Wand2
+} from '@lucide/vue'
 import { CINEMATOGRAPHY_MANUAL, type ManualEntry } from './cinematography'
 
 interface AiManjuBridge {
@@ -71,7 +81,7 @@ async function pickReferenceFile(
 }
 
 type ApiStatus = 'checking' | 'ok' | 'error'
-type View = 'projects' | 'project' | 'posters' | 'settings' | 'manual'
+type View = 'projects' | 'project' | 'posters' | 'videoGen' | 'textImages' | 'settings' | 'manual'
 
 type StyleMode = 'comic' | 'realistic' | 'render3d' | 'freeform'
 // character: 人物剧情，正常按角色驱动写剧本；no_character: 无固定角色(风光/氛围/产品向)，
@@ -161,6 +171,37 @@ interface PosterItem {
   filePath: string | null
   url: string | null
   backgroundUrl: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  error: string | null
+  providerId: string | null
+  model: string | null
+  createdAt: string
+}
+
+interface VideoGenerationItem {
+  id: string
+  projectId: string | null
+  referenceImagePath: string
+  prompt: string
+  filePath: string | null
+  url: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  error: string | null
+  providerId: string | null
+  model: string | null
+  createdAt: string
+}
+
+interface TextImageItem {
+  id: string
+  projectId: string | null
+  prompt: string
+  orientation: 'portrait' | 'landscape'
+  orientationLabel: string
+  styleMode: StyleMode
+  referenceImagePaths: string | null
+  filePath: string | null
+  url: string | null
   status: 'pending' | 'running' | 'completed' | 'failed'
   error: string | null
   providerId: string | null
@@ -470,6 +511,34 @@ function bodyLinesFromText(text: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
 }
+
+// ---- 视频生成（无剧本，上传参考图直接生成视频）----
+// 跟海报一样是独立的一级功能，不需要先建视频项目/写剧本/拆场次镜头。单张参考图 +
+// 一段描述，直接调 Seedance 出一条视频；不做配音/字幕/多段拼接，最快最简单的路径。
+const videoGenList = ref<VideoGenerationItem[]>([])
+const videoGenTab = ref<'list' | 'create'>('list')
+const videoGenForm = reactive({ prompt: '' })
+// 复用 pickReferenceFile(record, key, multiple, previewKey)，key 固定叫 'new'，
+// 跟 posterRefPathInput 同一个模式；single=false 因为图生视频只需要一张起始帧参考图。
+const videoGenRefPathInput = reactive<Record<string, string>>({ new: '' })
+const creatingVideoGen = ref(false)
+const videoGenError = ref<string | null>(null)
+const regeneratingVideoGen = reactive<Record<string, boolean>>({})
+
+// ---- 文生图（独立文生图，不挂在任何项目下）----
+const textImages = ref<TextImageItem[]>([])
+const textImageOrientations = ref<PosterOrientationOption[]>([])
+let textImageOrientationsLoaded = false
+const textImagesTab = ref<'list' | 'create'>('list')
+const textImageForm = reactive({
+  prompt: '',
+  styleMode: 'comic' as StyleMode,
+  orientation: 'portrait' as 'portrait' | 'landscape'
+})
+const textImageRefPathInput = reactive<Record<string, string>>({ new: '' })
+const creatingTextImage = ref(false)
+const textImageError = ref<string | null>(null)
+const regeneratingTextImage = reactive<Record<string, boolean>>({})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -890,6 +959,118 @@ async function deletePoster(posterId: string): Promise<void> {
   if (!window.confirm('删除这张海报，确定吗？（磁盘上已经生成好的文件不会被删除）')) return
   await api(`/posters/${posterId}`, { method: 'DELETE' })
   await loadPosters()
+}
+
+// ---- 视频生成（无剧本，上传参考图直接生成视频）----
+async function loadVideoGenerations(): Promise<void> {
+  const data = await api<VideoGenerationItem[]>('/video-generations')
+  // 视频文件名固定是 video.mp4，重新生成是原地覆盖，不加时间戳浏览器不会重新拉取。
+  for (const v of data) {
+    v.url = withCacheBust(v.url)
+  }
+  videoGenList.value = data
+}
+
+async function createVideoGeneration(): Promise<void> {
+  if (!videoGenForm.prompt.trim() || !videoGenRefPathInput.new.trim()) return
+  videoGenError.value = null
+  creatingVideoGen.value = true
+  try {
+    await api('/video-generations', {
+      method: 'POST',
+      body: JSON.stringify({
+        referenceImagePath: videoGenRefPathInput.new.trim(),
+        prompt: videoGenForm.prompt.trim()
+      })
+    })
+    videoGenForm.prompt = ''
+    videoGenRefPathInput.new = ''
+    delete filePreviewByKey['video-gen-ref:new']
+    videoGenTab.value = 'list'
+    await loadVideoGenerations()
+  } catch (err) {
+    videoGenError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    creatingVideoGen.value = false
+  }
+}
+
+async function regenerateVideoGeneration(videoId: string): Promise<void> {
+  regeneratingVideoGen[videoId] = true
+  try {
+    await api(`/video-generations/${videoId}/regenerate`, { method: 'POST' })
+    await loadVideoGenerations()
+  } finally {
+    regeneratingVideoGen[videoId] = false
+  }
+}
+
+async function deleteVideoGeneration(videoId: string): Promise<void> {
+  if (!window.confirm('删除这条视频记录，确定吗？（磁盘上已经生成好的文件不会被删除）')) return
+  await api(`/video-generations/${videoId}`, { method: 'DELETE' })
+  await loadVideoGenerations()
+}
+
+// ---- 文生图（独立文生图，不挂在任何项目下）----
+async function loadTextImages(): Promise<void> {
+  const data = await api<TextImageItem[]>('/text-images')
+  for (const t of data) {
+    t.url = withCacheBust(t.url)
+  }
+  textImages.value = data
+}
+
+async function loadTextImageOrientations(): Promise<void> {
+  if (textImageOrientationsLoaded) return
+  try {
+    const data = await api<{ orientations: PosterOrientationOption[] }>('/text-images/options')
+    textImageOrientations.value = data.orientations
+    textImageOrientationsLoaded = true
+  } catch {
+    // 静默失败：画幅选择器会是空的，不影响提交(后端有默认值)。
+  }
+}
+
+async function createTextImage(): Promise<void> {
+  if (!textImageForm.prompt.trim()) return
+  textImageError.value = null
+  creatingTextImage.value = true
+  try {
+    await api('/text-images', {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: textImageForm.prompt.trim(),
+        styleMode: textImageForm.styleMode,
+        orientation: textImageForm.orientation,
+        referenceImagePaths: textImageRefPathInput.new.trim() || null
+      })
+    })
+    textImageForm.prompt = ''
+    textImageRefPathInput.new = ''
+    delete filePreviewByKey['text-image-ref:new']
+    textImagesTab.value = 'list'
+    await loadTextImages()
+  } catch (err) {
+    textImageError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    creatingTextImage.value = false
+  }
+}
+
+async function regenerateTextImage(imageId: string): Promise<void> {
+  regeneratingTextImage[imageId] = true
+  try {
+    await api(`/text-images/${imageId}/regenerate`, { method: 'POST' })
+    await loadTextImages()
+  } finally {
+    regeneratingTextImage[imageId] = false
+  }
+}
+
+async function deleteTextImage(imageId: string): Promise<void> {
+  if (!window.confirm('删除这张图，确定吗？（磁盘上已经生成好的文件不会被删除）')) return
+  await api(`/text-images/${imageId}`, { method: 'DELETE' })
+  await loadTextImages()
 }
 
 const generatingScene = reactive<Record<string, boolean>>({})
@@ -1786,6 +1967,12 @@ function startPolling(): void {
     if (posters.value.some((p) => p.status === 'running')) {
       await loadPosters()
     }
+    if (videoGenList.value.some((v) => v.status === 'running')) {
+      await loadVideoGenerations()
+    }
+    if (textImages.value.some((t) => t.status === 'running')) {
+      await loadTextImages()
+    }
 
     if (view.value !== 'project' || !activeProject.value) return
     if (!hasRunningWork.value) return
@@ -1810,7 +1997,10 @@ async function waitForBackendThenLoad(): Promise<void> {
     loadProjects().catch(() => {}),
     loadPosters().catch(() => {}),
     loadPosterOrientations().catch(() => {}),
-    loadPosterTemplates().catch(() => {})
+    loadPosterTemplates().catch(() => {}),
+    loadVideoGenerations().catch(() => {}),
+    loadTextImages().catch(() => {}),
+    loadTextImageOrientations().catch(() => {})
   ])
 }
 
@@ -1872,6 +2062,38 @@ function statusLabel(status: string): string {
           @click="view = 'posters'; postersTab = 'list'"
         >
           <Images class="nav-icon" aria-hidden="true" /><span>海报列表</span>
+        </button>
+        </div>
+
+        <div class="sidebar-nav-group">
+        <span class="sidebar-nav-label">视频生成</span>
+        <button
+          :class="{ active: view === 'videoGen' && videoGenTab === 'create' }"
+          @click="view = 'videoGen'; videoGenTab = 'create'"
+        >
+          <Clapperboard class="nav-icon" aria-hidden="true" /><span>新建视频生成</span>
+        </button>
+        <button
+          :class="{ active: view === 'videoGen' && videoGenTab === 'list' }"
+          @click="view = 'videoGen'; videoGenTab = 'list'"
+        >
+          <ListVideo class="nav-icon" aria-hidden="true" /><span>视频生成列表</span>
+        </button>
+        </div>
+
+        <div class="sidebar-nav-group">
+        <span class="sidebar-nav-label">文生图</span>
+        <button
+          :class="{ active: view === 'textImages' && textImagesTab === 'create' }"
+          @click="view = 'textImages'; textImagesTab = 'create'"
+        >
+          <Wand2 class="nav-icon" aria-hidden="true" /><span>新建文生图</span>
+        </button>
+        <button
+          :class="{ active: view === 'textImages' && textImagesTab === 'list' }"
+          @click="view = 'textImages'; textImagesTab = 'list'"
+        >
+          <Sparkles class="nav-icon" aria-hidden="true" /><span>文生图列表</span>
         </button>
         </div>
 
@@ -2402,6 +2624,154 @@ function statusLabel(status: string): string {
                   <button class="ghost danger" @click="deletePoster(poster.id)">删除</button>
                 </div>
               </template>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- 视频生成：无剧本，上传一张参考图 + 写一段描述，直接调 Seedance 图生视频。
+         独立的一级功能，不挂在任何视频项目下面，不经过 Project/Story/Scene/Shot
+         结构，也没有配音/字幕/多段拼接——单张参考图进，单条视频出。 -->
+    <section v-else-if="view === 'videoGen'" class="panel posters-page">
+      <div class="projects-page-head">
+        <div>
+          <h1>{{ videoGenTab === 'create' ? '新建视频生成' : '视频生成列表' }}</h1>
+          <p class="hint">{{ videoGenTab === 'create' ? '上传一张参考图 + 写一段画面/运镜描述，直接生成一条视频（不需要先建项目/写剧本）' : '所有生成过的视频，不分项目' }}</p>
+        </div>
+        <button v-if="videoGenTab === 'list'" class="refresh" @click="loadVideoGenerations">刷新列表</button>
+      </div>
+
+      <template v-if="videoGenTab === 'create'">
+        <section class="poster-form-section">
+          <div class="poster-step-head"><span>1</span><div><strong>参考图</strong><small>作为视频的起始帧</small></div></div>
+          <div class="field">
+            <label>参考图<span class="field-badge">必填</span></label>
+            <div class="ref-path-row">
+              <input v-model="videoGenRefPathInput.new" placeholder="本地图片路径" />
+              <button class="ghost" @click="pickReferenceFile(videoGenRefPathInput, 'new', false, 'video-gen-ref:new')">选择文件…</button>
+            </div>
+            <img v-if="filePreviewByKey['video-gen-ref:new']" class="ref-pick-preview" :src="filePreviewByKey['video-gen-ref:new']" />
+          </div>
+        </section>
+
+        <section class="poster-form-section">
+          <div class="poster-step-head"><span>2</span><div><strong>画面/运镜描述</strong><small>喂给 Seedance 的提示词</small></div></div>
+          <div class="field">
+            <textarea v-model="videoGenForm.prompt" rows="4" placeholder="比如：镜头缓慢推进，女孩转头微笑，微风吹动头发" />
+          </div>
+        </section>
+
+        <div class="poster-create-actions">
+          <div><strong>准备生成</strong><span>固定 9:16 / 4秒 / 720p，跟分镜生成视频同一套参数</span><p v-if="videoGenError" class="error">{{ videoGenError }}</p></div>
+          <button
+            :disabled="creatingVideoGen || !videoGenForm.prompt.trim() || !videoGenRefPathInput.new.trim()"
+            @click="createVideoGeneration"
+          >{{ creatingVideoGen ? '生成中…' : '生成视频' }}</button>
+        </div>
+      </template>
+
+      <template v-else>
+        <p v-if="videoGenList.length === 0" class="hint">
+          还没有生成过视频，先切到「新建视频生成」创建一个吧（如果你确定之前生成过，点"刷新列表"再看看）
+        </p>
+        <div class="poster-grid">
+          <div v-for="item in videoGenList" :key="item.id" class="poster-card">
+            <div class="poster-card-media" :class="statusColorClass(item.status)">
+              <video v-if="item.url" controls :src="`${apiBaseUrl}${item.url}`" @dblclick="openInSystemViewer(item.filePath)" />
+              <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
+            </div>
+            <div class="poster-card-info">
+              <div class="poster-card-title-row">
+                <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
+              </div>
+              <p class="hint">{{ item.prompt }}</p>
+              <p v-if="item.error" class="error">{{ item.error }}</p>
+              <div class="poster-card-actions">
+                <button class="ghost" :disabled="regeneratingVideoGen[item.id]" @click="regenerateVideoGeneration(item.id)">
+                  {{ regeneratingVideoGen[item.id] ? '生成中…' : '重新生成' }}
+                </button>
+                <button class="ghost danger" @click="deleteVideoGeneration(item.id)">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- 文生图：独立的一级功能，写一段描述直接出图，不做标题文字合成，跟海报共用
+         出图风格(styleMode)和画幅(orientation)概念。 -->
+    <section v-else-if="view === 'textImages'" class="panel posters-page">
+      <div class="projects-page-head">
+        <div>
+          <h1>{{ textImagesTab === 'create' ? '新建文生图' : '文生图列表' }}</h1>
+          <p class="hint">{{ textImagesTab === 'create' ? '写一段画面描述直接出图，不做任何文字合成' : '所有生成过的图片，不分项目' }}</p>
+        </div>
+        <button v-if="textImagesTab === 'list'" class="refresh" @click="loadTextImages">刷新列表</button>
+      </div>
+
+      <template v-if="textImagesTab === 'create'">
+        <section class="poster-form-section">
+          <div class="poster-step-head"><span>1</span><div><strong>画面描述</strong><small>喂给 Seedream 的提示词</small></div></div>
+          <div class="field">
+            <textarea v-model="textImageForm.prompt" rows="4" placeholder="比如：夜晚城市天台，霓虹灯背景，一只猫坐在栏杆上" />
+          </div>
+          <div class="field">
+            <label>画布方向</label>
+            <div class="poster-orientation-picker">
+              <label v-for="o in textImageOrientations" :key="o.id">
+                <input type="radio" :value="o.id" v-model="textImageForm.orientation" /> {{ o.label }}
+              </label>
+            </div>
+          </div>
+          <div class="style-mode-picker">
+            <span class="style-mode-label">出图风格</span>
+            <label><input type="radio" value="comic" v-model="textImageForm.styleMode" /> 漫画风</label>
+            <label><input type="radio" value="realistic" v-model="textImageForm.styleMode" /> 真人风</label>
+            <label><input type="radio" value="render3d" v-model="textImageForm.styleMode" /> 3D风</label>
+            <label><input type="radio" value="freeform" v-model="textImageForm.styleMode" /> AI自由发挥</label>
+          </div>
+          <div class="field">
+            <label>参考图<span class="field-badge">可选，传了就是图生图</span></label>
+            <div class="ref-path-row">
+              <input v-model="textImageRefPathInput.new" placeholder="本地图片路径，留空纯文生图" />
+              <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'new', true, 'text-image-ref:new')">选择文件…</button>
+            </div>
+            <img v-if="filePreviewByKey['text-image-ref:new']" class="ref-pick-preview" :src="filePreviewByKey['text-image-ref:new']" />
+          </div>
+        </section>
+
+        <div class="poster-create-actions">
+          <div><strong>准备生成</strong><span>生成结果就是 AI 出的原图，不做二次加工</span><p v-if="textImageError" class="error">{{ textImageError }}</p></div>
+          <button :disabled="creatingTextImage || !textImageForm.prompt.trim()" @click="createTextImage">
+            {{ creatingTextImage ? '生成中…' : '生成图片' }}
+          </button>
+        </div>
+      </template>
+
+      <template v-else>
+        <p v-if="textImages.length === 0" class="hint">
+          还没有生成过图片，先切到「新建文生图」创建一个吧（如果你确定之前生成过，点"刷新列表"再看看）
+        </p>
+        <div class="poster-grid">
+          <div v-for="item in textImages" :key="item.id" class="poster-card">
+            <div class="poster-card-media" :class="statusColorClass(item.status)">
+              <img v-if="item.url" :src="`${apiBaseUrl}${item.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(item.filePath)" />
+              <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
+            </div>
+            <div class="poster-card-info">
+              <div class="poster-card-title-row">
+                <span class="tag">{{ item.orientationLabel }}</span>
+                <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
+              </div>
+              <p class="hint">{{ item.prompt }}</p>
+              <p v-if="item.error" class="error">{{ item.error }}</p>
+              <div class="poster-card-actions">
+                <button class="ghost" :disabled="regeneratingTextImage[item.id]" @click="regenerateTextImage(item.id)">
+                  {{ regeneratingTextImage[item.id] ? '生成中…' : '重新生成' }}
+                </button>
+                <button class="ghost danger" @click="deleteTextImage(item.id)">删除</button>
+              </div>
             </div>
           </div>
         </div>

@@ -135,6 +135,28 @@ def poster_dir(poster_id: str, project_id: Optional[str] = None) -> Path:
     return d
 
 
+def video_gen_dir(video_id: str, project_id: Optional[str] = None) -> Path:
+    """无剧本图生视频是独立功能，project_id 大多数情况下是 None——这时候放到
+    output/video_generations/{id}/ 下，不挂在任何项目文件夹里；传了 project_id
+    就还是放进那个项目的子目录，方便手动整理，跟 poster_dir 同一个约定。"""
+    if project_id:
+        d = project_dir(project_id) / "video_generations" / video_id
+    else:
+        d = get_output_root() / "video_generations" / video_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def text_image_dir(image_id: str, project_id: Optional[str] = None) -> Path:
+    """独立文生图，跟 video_gen_dir/poster_dir 同一个约定。"""
+    if project_id:
+        d = project_dir(project_id) / "text_images" / image_id
+    else:
+        d = get_output_root() / "text_images" / image_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def to_static_url(file_path: Optional[str]) -> Optional[str]:
     """把生成产物目录下的绝对路径转成 /files/... 相对 URL，配合 main.py 里
     /files/{path} 的动态读取路由，这样渲染进程能直接用 http://127.0.0.1:8000/files/...
