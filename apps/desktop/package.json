@@ -1,15 +1,15 @@
 {
   "name": "@ai-manju/desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:win": "electron-vite build && electron-builder --win",
+    "build:win": "electron-vite build && electron-builder --win --publish never",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
-    "build:mac": "electron-vite build && electron-builder --mac"
+    "build:mac": "electron-vite build && electron-builder --mac --publish never"
   },
   "dependencies": {
     "@lucide/vue": "^1.31.0",
