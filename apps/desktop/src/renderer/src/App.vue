@@ -199,6 +199,12 @@ async function pickReferenceFile(record: Record<string, string>, key: string, mu
   }
 }
 
+// 多参考图字段(逗号分隔)里，手动去掉其中一张已选的图——只改文本框绑的那个字符串，
+// 不动 pathPreviewCache(其他地方可能还在用同一张图的预览缓存，删了反而多余重新读盘)。
+function removeReferencePath(record: Record<string, string>, key: string, path: string): void {
+  record[key] = splitPaths(record[key]).filter((p) => p !== path).join(',')
+}
+
 type ApiStatus = 'checking' | 'ok' | 'error'
 type View = 'projects' | 'project' | 'posters' | 'videoGen' | 'textImages' | 'settings' | 'manual'
 
@@ -2895,13 +2901,15 @@ function statusLabel(status: string): string {
                   <button class="ghost" @click="pickReferenceFile(posterRefPathInput, 'new', true)">选择文件…</button>
                 </div>
                 <div class="ref-preview-row">
-                  <img
-                    v-for="entry in previewEntries(posterRefPathInput.new)"
-                    :key="entry.path"
-                    class="ref-pick-preview"
-                    :src="entry.preview"
-                    :title="entry.path"
-                  />
+                  <div v-for="entry in previewEntries(posterRefPathInput.new)" :key="entry.path" class="ref-pick-thumb">
+                    <img class="ref-pick-preview" :src="entry.preview" :title="entry.path" />
+                    <button
+                      type="button"
+                      class="ref-pick-remove"
+                      title="删除这张参考图"
+                      @click="removeReferencePath(posterRefPathInput, 'new', entry.path)"
+                    >×</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3111,13 +3119,15 @@ function statusLabel(status: string): string {
                 <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'character', true)">选择文件…</button>
               </div>
               <div v-if="previewEntries(textImageRefPathInput.character).length" class="text-image-ref-preview-wrap">
-                <img
-                  v-for="entry in previewEntries(textImageRefPathInput.character)"
-                  :key="entry.path"
-                  class="ref-pick-preview text-image-ref-preview"
-                  :src="entry.preview"
-                  :title="entry.path"
-                />
+                <div v-for="entry in previewEntries(textImageRefPathInput.character)" :key="entry.path" class="ref-pick-thumb">
+                  <img class="ref-pick-preview text-image-ref-preview" :src="entry.preview" :title="entry.path" />
+                  <button
+                    type="button"
+                    class="ref-pick-remove"
+                    title="删除这张参考图"
+                    @click="removeReferencePath(textImageRefPathInput, 'character', entry.path)"
+                  >×</button>
+                </div>
                 <span>已选择 {{ splitPaths(textImageRefPathInput.character).length }} 张角色参考图</span>
               </div>
             </div>
@@ -3129,13 +3139,15 @@ function statusLabel(status: string): string {
                 <button class="ghost" @click="pickReferenceFile(textImageRefPathInput, 'scene', true)">选择文件…</button>
               </div>
               <div v-if="previewEntries(textImageRefPathInput.scene).length" class="text-image-ref-preview-wrap">
-                <img
-                  v-for="entry in previewEntries(textImageRefPathInput.scene)"
-                  :key="entry.path"
-                  class="ref-pick-preview text-image-ref-preview"
-                  :src="entry.preview"
-                  :title="entry.path"
-                />
+                <div v-for="entry in previewEntries(textImageRefPathInput.scene)" :key="entry.path" class="ref-pick-thumb">
+                  <img class="ref-pick-preview text-image-ref-preview" :src="entry.preview" :title="entry.path" />
+                  <button
+                    type="button"
+                    class="ref-pick-remove"
+                    title="删除这张参考图"
+                    @click="removeReferencePath(textImageRefPathInput, 'scene', entry.path)"
+                  >×</button>
+                </div>
                 <span>已选择 {{ splitPaths(textImageRefPathInput.scene).length }} 张环境参考图</span>
               </div>
             </div>
@@ -3770,13 +3782,15 @@ function statusLabel(status: string): string {
                             <label>画面参考图</label>
                             <div class="ref-path-row">
                               <input v-model="refImagePathsInput[shot.id]" placeholder="留空时自动使用角色设定图和场景母版图" />
-                              <img
-                                v-for="entry in previewEntries(refImagePathsInput[shot.id])"
-                                :key="entry.path"
-                                class="ref-pick-preview"
-                                :src="entry.preview"
-                                :title="entry.path"
-                              />
+                              <div v-for="entry in previewEntries(refImagePathsInput[shot.id])" :key="entry.path" class="ref-pick-thumb">
+                                <img class="ref-pick-preview" :src="entry.preview" :title="entry.path" />
+                                <button
+                                  type="button"
+                                  class="ref-pick-remove"
+                                  title="删除这张参考图"
+                                  @click="removeReferencePath(refImagePathsInput, shot.id, entry.path)"
+                                >×</button>
+                              </div>
                               <button class="ghost" @click="pickReferenceFile(refImagePathsInput, shot.id, true)">选择文件…</button>
                             </div>
                           </div>
@@ -4576,6 +4590,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ref-path-row button { flex-shrink: 0; }
 .ref-preview-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .ref-preview-row .ref-pick-preview { width: 44px; height: 44px; }
+/* 缩略图右上角叠一个删除角标，鼠标悬停时才显出来，不然一排缩略图全带个×太抢眼。 */
+.ref-pick-thumb { position: relative; display: inline-flex; flex-shrink: 0; }
+.ref-pick-remove {
+  position: absolute; top: -6px; right: -6px; width: 16px; height: 16px; padding: 0;
+  border-radius: 50%; border: 1px solid #e4e4e7; background: white; color: #71717a;
+  font-size: 11px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.ref-pick-thumb:hover .ref-pick-remove { opacity: 1; }
+.ref-pick-remove:hover { background: #ef4444; border-color: #ef4444; color: white; }
 .manual-inline-select {
   margin-top: 4px; font-size: 12px; color: #52525b; background: #fafafa;
   border: 1px dashed #d4d4d8; padding: 4px 6px;
