@@ -3586,6 +3586,17 @@ function statusLabel(status: string): string {
                     />
                     <button class="ghost" @click="pickReferenceFile(sceneRefImagePathsInput, scene.id, true)">选择文件…</button>
                   </div>
+                  <div v-if="previewEntries(sceneRefImagePathsInput[scene.id]).length" class="ref-preview-row">
+                    <div v-for="entry in previewEntries(sceneRefImagePathsInput[scene.id])" :key="entry.path" class="ref-pick-thumb">
+                      <img class="ref-pick-preview" :src="entry.preview" :title="entry.path" />
+                      <button
+                        type="button"
+                        class="ref-pick-remove"
+                        title="删除这张参考图"
+                        @click="removeReferencePath(sceneRefImagePathsInput, scene.id, entry.path)"
+                      >×</button>
+                    </div>
+                  </div>
                   <div class="scene-ref-actions">
                     <button :disabled="generatingScene[scene.id] || scene.status === 'running'" @click="generateScene(scene.id)">
                       {{ scene.status === 'completed' ? '重新生成场景参考图' : '生成场景参考图' }}
