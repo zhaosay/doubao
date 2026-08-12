@@ -2038,13 +2038,13 @@ function statusLabel(status: string): string {
           :class="{ active: view === 'projects' && projectsTab === 'create' }"
           @click="view = 'projects'; projectsTab = 'create'"
         >
-          <FileVideo2 class="nav-icon" aria-hidden="true" /><span>新建Video</span>
+          <FileVideo2 class="nav-icon" aria-hidden="true" /><span>一键生成视频</span>
         </button>
         <button
           :class="{ active: (view === 'projects' && projectsTab === 'list') || view === 'project' }"
           @click="view = 'projects'; projectsTab = 'list'"
         >
-          <ListVideo class="nav-icon" aria-hidden="true" /><span>Video列表</span>
+          <ListVideo class="nav-icon" aria-hidden="true" /><span>剧本列表</span>
         </button>
         <button :class="{ active: view === 'manual' }" @click="view = 'manual'"><BookOpen class="nav-icon" aria-hidden="true" /><span>分镜与运镜手册</span></button>
         </div>
@@ -2071,7 +2071,7 @@ function statusLabel(status: string): string {
           :class="{ active: view === 'videoGen' && videoGenTab === 'create' }"
           @click="view = 'videoGen'; videoGenTab = 'create'"
         >
-          <Clapperboard class="nav-icon" aria-hidden="true" /><span>新建视频生成</span>
+          <Clapperboard class="nav-icon" aria-hidden="true" /><span>图生视频</span>
         </button>
         <button
           :class="{ active: view === 'videoGen' && videoGenTab === 'list' }"
@@ -2636,7 +2636,7 @@ function statusLabel(status: string): string {
     <section v-else-if="view === 'videoGen'" class="panel posters-page">
       <div class="projects-page-head">
         <div>
-          <h1>{{ videoGenTab === 'create' ? '新建视频生成' : '视频生成列表' }}</h1>
+          <h1>{{ videoGenTab === 'create' ? '图生视频' : '视频生成列表' }}</h1>
           <p class="hint">{{ videoGenTab === 'create' ? '上传一张参考图 + 写一段画面/运镜描述，直接生成一条视频（不需要先建项目/写剧本）' : '所有生成过的视频，不分项目' }}</p>
         </div>
         <button v-if="videoGenTab === 'list'" class="refresh" @click="loadVideoGenerations">刷新列表</button>
@@ -2673,7 +2673,7 @@ function statusLabel(status: string): string {
 
       <template v-else>
         <p v-if="videoGenList.length === 0" class="hint">
-          还没有生成过视频，先切到「新建视频生成」创建一个吧（如果你确定之前生成过，点"刷新列表"再看看）
+          还没有生成过视频，先切到「图生视频」创建一个吧（如果你确定之前生成过，点"刷新列表"再看看）
         </p>
         <div class="poster-grid">
           <div v-for="item in videoGenList" :key="item.id" class="poster-card">
