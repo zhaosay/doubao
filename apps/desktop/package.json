@@ -75,6 +75,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "electronVersion": "31.7.7"
   }
 }
