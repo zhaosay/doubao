@@ -10,6 +10,7 @@ import {
   Wand2
 } from '@lucide/vue'
 import { CINEMATOGRAPHY_MANUAL, type ManualEntry } from './cinematography'
+import appLogoUrl from './assets/logo.png'
 
 interface AiManjuBridge {
   apiBaseUrl: string
@@ -2449,13 +2450,8 @@ function statusLabel(status: string): string {
 <template>
   <div class="shell" :class="`ui-${uiVersion}`">
     <aside class="sidebar">
-      <!-- 原来这里写死了"AI视频工作台"几个字，跟系统原生窗口标题栏(index.html 的
-           <title>)显示的文字完全一样——窗口标题栏本来就居中显示这句话了，侧边栏里
-           再重复一遍，视觉上像是"窗口里又嵌了一个同名小窗口"。改成一个纯色小方块
-           当轻量的品牌标记，不重复文字，也不引入 emoji（跟之前侧栏去 emoji 是同一个
-           取舍）。 -->
       <div class="sidebar-brand" title="AI视频工作台" aria-label="AI视频工作台">
-        <span class="sidebar-brand-mark"></span>
+        <img class="sidebar-brand-logo" :src="appLogoUrl" alt="" />
       </div>
       <nav class="sidebar-nav">
         <div class="sidebar-nav-group">
@@ -4551,8 +4547,11 @@ body {
   height: 100vh;
   box-sizing: border-box;
 }
-.sidebar-brand { display: flex; }
-.sidebar-brand-mark { width: 14px; height: 14px; border-radius: 5px; background: #18181b; display: inline-block; }
+.sidebar-brand { display: flex; align-items: center; }
+.sidebar-brand-logo {
+  width: 34px; height: 34px; border-radius: 10px; object-fit: cover;
+  box-shadow: 0 8px 20px rgba(24, 24, 27, 0.12);
+}
 .sidebar-nav { display: flex; flex-direction: column; gap: 4px; }
 .sidebar-nav-group { display: flex; flex-direction: column; gap: 4px; }
 .sidebar-nav-label { padding: 0 8px; color: #a1a1aa; font-size: 10px; font-weight: 700; }
