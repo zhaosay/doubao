@@ -272,6 +272,46 @@ def missing_claude_message(cli_path_override: str | None = None) -> str:
     )
 
 
+def _format_cli_failure(returncode: int, stdout: str, stderr: str, cli_path_override: str | None) -> str:
+    """claude CLI 非 0 退出码时拼报错信息。之前这里只看 stderr——但不少版本的 claude
+    CLI(尤其是"直接调用手动填的 .exe 路径，跳过了 npm 装的 .cmd shim"这种场景，shim
+    脚本里可能做了一些环境变量/配置路径的准备工作，直接调 .exe 会跳过这些)会把真正的
+    报错信息(登录过期/网络问题/配置缺失)打到 stdout 而不是 stderr，或者两边都是空的
+    （常见于"这个可执行文件根本不是 claude CLI 本体，或者被杀毒软件/权限拦截，一启动
+    就直接退出"）。用户反馈"退出码1"后面什么都没有，就是卡在这个信息丢失上，这里
+    把 stdout 也纳入进来，尽量不让用户两眼一抹黑。
+    """
+    stderr_text = stderr.strip()
+    stdout_text = stdout.strip()
+    detail = stderr_text
+    if not detail and stdout_text:
+        try:
+            parsed = json.loads(stdout_text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            detail = str(parsed.get("result") or parsed.get("error") or parsed)
+        else:
+            detail = stdout_text
+    if not detail:
+        override_hint = (
+            f"当前用的路径是设置页手动填的「{cli_path_override}」，"
+            if cli_path_override
+            else "当前是自动检测到的路径，"
+        )
+        detail = (
+            "stdout/stderr 都是空的，claude 进程启动后立刻退出，没有留下任何报错信息。"
+            f"{override_hint}"
+            "常见原因：①这个可执行文件其实不是真正的 claude CLI 本体（比如直接填了 npm 装的 "
+            ".cmd/.bat shim 内部指向的那个真身文件，但那个真身其实还需要 shim 脚本准备的环境变量/"
+            "参数，直接单独调用反而跑不起来）——建议改填 shim 文件本身的路径（比如 claude.cmd），"
+            "而不是它内部指向的 .exe；②杀毒软件/系统权限拦截了这个进程；③在自己的终端里手动运行"
+            "一遍同样的命令（把这里的路径原样粘贴到 PowerShell/CMD 里加上 --version 试一下），"
+            "看终端里到底提示什么，比这里的报错更直接。"
+        )
+    return f"claude CLI 退出码 {returncode}: {detail[:2000]}"
+
+
 def _call_claude_cli(prompt: str, cli_path_override: str | None = None) -> str:
     """跑一次 claude CLI，返回剥掉 --output-format json 外层包装之后的原始文本内容
     （还没解析成 scenes，留给 _parse_scenes 统一处理）。"""
@@ -295,7 +335,7 @@ def _call_claude_cli(prompt: str, cli_path_override: str | None = None) -> str:
         raise StoryGenerationError(f"启动 claude 命令失败（本机可能没装/没加进 PATH）: {exc}") from exc
 
     if proc.returncode != 0:
-        raise StoryGenerationError(f"claude CLI 退出码 {proc.returncode}: {proc.stderr[:2000]}")
+        raise StoryGenerationError(_format_cli_failure(proc.returncode, proc.stdout, proc.stderr, cli_path_override))
 
     raw = proc.stdout.strip()
     if not raw:
@@ -547,7 +587,7 @@ def test_claude_cli(cli_path_override: str | None = None, timeout_sec: int = TES
         return False, f"启动 claude 命令失败（本机可能没装/没加进 PATH）: {exc}"
 
     if proc.returncode != 0:
-        return False, f"claude CLI 退出码 {proc.returncode}: {(proc.stderr or '').strip()[:500]}"
+        return False, _format_cli_failure(proc.returncode, proc.stdout, proc.stderr, cli_path_override)
 
     raw = proc.stdout.strip()
     if not raw:
