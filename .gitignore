@@ -26,6 +26,13 @@ apps/ai-service/**/__pycache__/
 .env.*
 *.pem
 *.key
+# 上面 *.pem 这条兜底规则误伤了 Windows 打包用的内嵌 Python 运行时里 certifi 库自带的
+# TLS 根证书文件(cacert.pem)——它不是密钥/密文件，是公开的CA证书列表，requests库靠它
+# 验证 HTTPS 连接。被这条规则挡住导致这个文件从来没提交进仓库，任何全新 clone/CI 构建出的
+# Windows 安装包里 certifi 目录都缺这个文件，运行时报错"Could not find a suitable TLS CA
+# certificate bundle"——第三方 API 连通性测试、以及任何用 requests 发 HTTPS 请求的地方
+# (Ark调用/Anthropic API调用)在这类构建出来的包上会全部失败。这里显式把它排除在忽略规则外。
+!apps/desktop/resources/python-win/Lib/site-packages/certifi/cacert.pem
 
 # 本地下载的发布安装包，不提交到仓库
 release/
