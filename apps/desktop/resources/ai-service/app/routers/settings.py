@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db import get_connection, get_settings
-from app.services.story_generator import test_anthropic_api, test_claude_cli
+from app.services.story_generator import detect_claude_cli, test_anthropic_api, test_claude_cli
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -57,6 +57,11 @@ class UpdateSettingsBody(BaseModel):
     storyGenApiKey: Optional[str] = None
     storyGenApiModel: Optional[str] = None
     storyGenApiMaxTokens: Optional[int] = None
+    # claude_cli 模式下的手动覆盖路径：留空(None 或空字符串) = 走自动检测(PATH 查找+
+    # Windows 常见安装目录扫描+npm 全局 prefix 动态查询)；填了就只认这一个路径，
+    # 给"自动检测都找不到/找到的是错的"这种情况一个逃生舱口，不用等我们再加新的
+    # 检测规则。跟 outputDir 一样的约定：传空字符串是"清空自定义值，恢复自动检测"。
+    storyGenCliPath: Optional[str] = None
 
 
 class TestStoryApiBody(BaseModel):
@@ -67,6 +72,12 @@ class TestStoryApiBody(BaseModel):
     apiKey: Optional[str] = None
     model: Optional[str] = None
     maxTokens: Optional[int] = None
+
+
+class TestStoryCliBody(BaseModel):
+    # 留空 = 用已保存的 storyGenCliPath(没保存过就走自动检测)；填了就只测这一个路径——
+    # 跟 TestStoryApiBody 一样，方便用户填完还没点保存就先测一下对不对。
+    cliPath: Optional[str] = None
 
 
 def _mask(key: Optional[str]) -> Optional[str]:
@@ -124,6 +135,19 @@ def _validate_bgm_path(raw: Optional[str]) -> Optional[str]:
     path = Path(raw.strip()).expanduser()
     if not path.is_file():
         raise HTTPException(400, f"背景音乐文件不存在: {path}")
+    return str(path)
+
+
+def _validate_cli_path(raw: Optional[str]) -> Optional[str]:
+    """claude CLI 手动覆盖路径：只要求文件存在，不校验"是不是真的能跑通"——
+    真正能不能调用得靠"测试连通性"按钮实际跑一次(网络/登录状态这些静态校验查不出来)，
+    这里只挡"明显填错路径"这种低级错误，保存的时候就先提醒，不用等到生成剧本才报错。
+    """
+    if not raw or not raw.strip():
+        return None
+    path = Path(raw.strip()).expanduser()
+    if not path.is_file():
+        raise HTTPException(400, f"claude CLI 路径不存在: {path}")
     return str(path)
 
 
@@ -225,6 +249,7 @@ def read_settings():
         "storyGenApiKeySet": bool(s.get("storyGenApiKey")),
         "storyGenApiModel": s.get("storyGenApiModel"),
         "storyGenApiMaxTokens": s.get("storyGenApiMaxTokens", 4096),
+        "storyGenCliPath": s.get("storyGenCliPath"),
     }
 
 
@@ -277,6 +302,12 @@ def update_settings(body: UpdateSettingsBody):
             else current.get("exportBgmVolume", 0.2)
         )
         export_use_bgm = body.exportUseBgm if body.exportUseBgm is not None else current.get("exportUseBgm", False)
+
+        story_gen_cli_path = (
+            _validate_cli_path(body.storyGenCliPath)
+            if body.storyGenCliPath is not None
+            else current.get("storyGenCliPath")
+        )
 
         story_gen_provider = (
             body.storyGenProvider if body.storyGenProvider is not None else current.get("storyGenProvider", "claude_cli")
@@ -343,8 +374,8 @@ def update_settings(body: UpdateSettingsBody):
                 "exportBgmVolume, exportUseBgm, "
                 "customStylePrefixes, customStyleHints, customContentTypeHints, customProjectTemplates, "
                 "posterFontPath, storyGenProvider, storyGenApiBaseUrl, storyGenApiKey, storyGenApiModel, "
-                "storyGenApiMaxTokens, updatedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "storyGenApiMaxTokens, storyGenCliPath, updatedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "singleton",
                     ark_api_key,
@@ -368,6 +399,7 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_key,
                     story_gen_api_model,
                     story_gen_api_max_tokens,
+                    story_gen_cli_path,
                     now,
                 ),
             )
@@ -379,7 +411,7 @@ def update_settings(body: UpdateSettingsBody):
                 "customStylePrefixes = ?, customStyleHints = ?, customContentTypeHints = ?, "
                 "customProjectTemplates = ?, posterFontPath = ?, storyGenProvider = ?, "
                 'storyGenApiBaseUrl = ?, storyGenApiKey = ?, storyGenApiModel = ?, storyGenApiMaxTokens = ?, '
-                'updatedAt = ? WHERE id = ?',
+                'storyGenCliPath = ?, updatedAt = ? WHERE id = ?',
                 (
                     ark_api_key,
                     ark_base_url,
@@ -402,6 +434,7 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_key,
                     story_gen_api_model,
                     story_gen_api_max_tokens,
+                    story_gen_cli_path,
                     now,
                     "singleton",
                 ),
@@ -411,13 +444,31 @@ def update_settings(body: UpdateSettingsBody):
 
 
 @router.post("/test-story-cli")
-def test_story_cli():
+def test_story_cli(body: TestStoryCliBody = TestStoryCliBody()):
     """测本机 claude CLI（Claude Code CLI）是否能正常调用。用户在 Windows 上反馈
     "AI生成剧本"一直出错，但不确定是没装/没登录/网络问题——这个按钮不改任何设置，
     只是跑一次真实的 subprocess 调用，把结果原样返回，让用户自己看出到底卡在哪。
+    body.cliPath 有值就只测这一个路径(设置页填了手动覆盖但还没点保存也能先测)，
+    没填就用已保存的 storyGenCliPath(没保存过就走自动检测)。
     """
-    ok, message = test_claude_cli()
+    with get_connection() as conn:
+        current = get_settings(conn)
+    cli_path = body.cliPath if body.cliPath is not None else current.get("storyGenCliPath")
+    ok, message = test_claude_cli(cli_path)
     return {"ok": ok, "message": message}
+
+
+@router.post("/detect-story-cli-path")
+def detect_story_cli_path():
+    """给设置页"自动检测"按钮用：忽略任何已保存的手动覆盖值，纯跑一遍自动检测逻辑
+    (PATH 查找 + Windows 常见安装目录扫描 + npm 全局 prefix 动态查询 + 僵尸 shim 识别)，
+    检测到就把路径返回给前端回填进输入框，用户看一眼确认后再点"保存设置"——
+    不改任何已保存的设置，纯只读探测。
+    """
+    path = detect_claude_cli()
+    if path:
+        return {"found": True, "path": path}
+    return {"found": False, "path": None, "message": "自动检测未找到 claude CLI，请手动填写完整路径"}
 
 
 @router.post("/test-story-api")

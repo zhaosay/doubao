@@ -218,17 +218,40 @@ def _find_claude_candidates() -> list[str]:
     return deduped
 
 
-def _claude_command() -> str | None:
+def _claude_command(cli_path_override: str | None = None) -> str | None:
     """Find Claude Code CLI in GUI-launched packaged apps as well as normal shells.
-    候选路径按优先级过一遍可用性验证(见 _is_usable)，跳过僵尸 shim，
-    返回第一个真正能用的；一个能用的都没有就返回 None。"""
+
+    cli_path_override 是设置页里"Claude CLI 路径"手动填的值(Setting.storyGenCliPath)——
+    自动检测在有些机器上确实猜不准(装到了非标准目录、公司电脑改过 npm 全局前缀等)，
+    与其一直加候选目录猜下去，不如让用户直接把路径贴上来，明确优先于自动检测。
+    填了就只验证这一个路径可用(见 _is_usable，同样会识别僵尸 shim)，不再去扫别的候选；
+    没填(None/空字符串)才走原来的自动检测逻辑。
+    """
+    if cli_path_override and cli_path_override.strip():
+        candidate = cli_path_override.strip()
+        return candidate if _is_usable(candidate) else None
+
     for candidate in _find_claude_candidates():
         if _is_usable(candidate):
             return candidate
     return None
 
 
-def _missing_claude_message() -> str:
+def missing_claude_message(cli_path_override: str | None = None) -> str:
+    if cli_path_override and cli_path_override.strip():
+        candidate = cli_path_override.strip()
+        if not Path(candidate).exists():
+            return (
+                f"设置页里填的 Claude CLI 路径不存在：{candidate}。检查一下路径有没有打错"
+                "（可以在文件管理器里打开确认），或者留空交给自动检测。"
+            )
+        target = _shim_target(candidate)
+        return (
+            f"设置页里填的 Claude CLI 路径（{candidate}）指向的实际程序已经不存在"
+            f"（这是个跳板脚本，内部引用的真身路径是 {target}，但这个文件不在了）。"
+            if target
+            else f"设置页里填的路径（{candidate}）看起来不是一个能正常运行的可执行文件。"
+        )
     # 找到过候选(比如 PATH 上有 claude.cmd)，但验证下来都是僵尸 shim(内部引用的
     # claude.exe/claude.js 已经不存在)——大概率是重装到了别的目录、或者用 nvm/volta
     # 切换过 Node 版本，留下了旧的 shim 残留，这跟"压根没装"是两个问题，分开提示。
@@ -239,22 +262,22 @@ def _missing_claude_message() -> str:
             f"找到了 claude 命令（{broken_list}），但它指向的实际程序已经不存在——"
             "大概率是 Claude Code 重装到了别的目录、或者切换过 Node 版本后留下的旧文件。"
             "建议删掉这个文件重新安装 Claude Code（npm install -g "
-            "@anthropic-ai/claude-code），或者确认 PATH 里指向的是当前真正在用的安装目录。"
-            "也可以在设置页切换成第三方 API 方式。"
+            "@anthropic-ai/claude-code），或者去设置页手动填一下 Claude CLI 的真实路径。"
+            "也可以切换成第三方 API 方式。"
         )
     return (
         "本机没有找到 claude 命令（Claude Code CLI）。如果终端里能运行 claude，"
-        "请重启本应用；Windows 用户还要确认 Claude Code 的安装目录已加入系统 PATH。"
-        "也可以在设置页切换成第三方 API 方式。"
+        "请重启本应用；Windows 用户还要确认 Claude Code 的安装目录已加入系统 PATH，"
+        "或者去设置页手动填一下 Claude CLI 的真实路径。也可以切换成第三方 API 方式。"
     )
 
 
-def _call_claude_cli(prompt: str) -> str:
+def _call_claude_cli(prompt: str, cli_path_override: str | None = None) -> str:
     """跑一次 claude CLI，返回剥掉 --output-format json 外层包装之后的原始文本内容
     （还没解析成 scenes，留给 _parse_scenes 统一处理）。"""
-    command = _claude_command()
+    command = _claude_command(cli_path_override)
     if not command:
-        raise StoryGenerationError(_missing_claude_message())
+        raise StoryGenerationError(missing_claude_message(cli_path_override))
 
     try:
         proc = subprocess.run(
@@ -374,7 +397,9 @@ def call_anthropic_api(
 def _attempt_generate(prompt: str, provider_config: dict) -> list[dict]:
     """跑一次生成 + 解析，失败就抛 StoryGenerationError，不在这里做重试判断。
     provider_config 形状: {"provider": "claude_cli"|"api", "baseUrl", "apiKey",
-    "model", "maxTokens"}，后 4 个只有 provider="api" 时才会用到。
+    "model", "maxTokens", "cliPath"}，"baseUrl"/"apiKey"/"model"/"maxTokens" 只有
+    provider="api" 时才会用到，"cliPath" 只有 provider="claude_cli" 时才会用到
+    (Setting.storyGenCliPath，用户手动指定的 CLI 路径，覆盖自动检测)。
     """
     provider = provider_config.get("provider", DEFAULT_STORY_GEN_PROVIDER)
     if provider == "api":
@@ -387,7 +412,7 @@ def _attempt_generate(prompt: str, provider_config: dict) -> list[dict]:
         )
         return _parse_scenes(content, "第三方 API")
 
-    content = _call_claude_cli(prompt)
+    content = _call_claude_cli(prompt, provider_config.get("cliPath"))
     return _parse_scenes(content, "claude CLI")
 
 
@@ -434,8 +459,8 @@ def generate_story_scenes(
             raise StoryGenerationError(
                 f"第三方 API 方式缺少配置项：{'、'.join(missing)}，请先在设置页填完整。"
             )
-    elif not _claude_command():
-        raise StoryGenerationError(_missing_claude_message())
+    elif not _claude_command(provider_config.get("cliPath")):
+        raise StoryGenerationError(missing_claude_message(provider_config.get("cliPath")))
 
     if custom_style_hints and custom_style_hints.get(style_mode):
         style_hint = custom_style_hints[style_mode]
@@ -470,14 +495,25 @@ def generate_story_scenes(
 _TEST_PROMPT = "请只回复两个字：正常"
 
 
-def test_claude_cli(timeout_sec: int = TEST_TIMEOUT_SEC) -> tuple[bool, str]:
+def detect_claude_cli() -> str | None:
+    """纯自动检测，忽略 Setting.storyGenCliPath 手动覆盖值——给设置页"自动检测"按钮用：
+    检测到就把路径回填进输入框，用户看一眼确认后点"保存设置"，不用自己去翻文件系统
+    抄这个路径(尤其是装在自定义 npm 全局目录、或者用了 nvm/volta 的情况下，路径经常
+    很长很绕，手动抄很容易抄错一个字符)。
+    """
+    return _claude_command(None)
+
+
+def test_claude_cli(cli_path_override: str | None = None, timeout_sec: int = TEST_TIMEOUT_SEC) -> tuple[bool, str]:
     """测本机 claude CLI 是否能正常调用。用短超时+一句极简的测试 prompt，
     不走 generate_story_scenes 那套"必须解析出 JSON 数组"的逻辑——测试连通性
     不需要真的生成分镜，claude 随便回句话就算通。
+    cli_path_override 有值就只测这一个路径(设置页填的手动覆盖值，测试时还没保存
+    也能先测)，没有就走自动检测。
     """
-    command = _claude_command()
+    command = _claude_command(cli_path_override)
     if not command:
-        return False, _missing_claude_message()
+        return False, missing_claude_message(cli_path_override)
 
     try:
         proc = subprocess.run(

@@ -237,6 +237,8 @@ def _build_story_provider_config(settings: dict) -> dict:
         "apiKey": settings.get("storyGenApiKey"),
         "model": settings.get("storyGenApiModel"),
         "maxTokens": settings.get("storyGenApiMaxTokens"),
+        # claude_cli 模式下的手动覆盖路径，None = 走 _find_claude_candidates 自动检测。
+        "cliPath": settings.get("storyGenCliPath"),
     }
 
 

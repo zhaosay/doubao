@@ -462,6 +462,10 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 // 配好第三方 API 并切换过来，才会改用 api 方式，避免"什么都没配就被切走"。
 const storyGenForm = reactive({
   provider: 'claude_cli' as 'claude_cli' | 'api',
+  // claude_cli 模式的手动覆盖路径，留空 = 走自动检测（PATH 查找 + Windows 常见安装
+  // 目录扫描 + npm 全局 prefix 动态查询 + 僵尸 shim 识别）。填了就只认这一个路径，
+  // 给自动检测找不到/找错的情况一个逃生舱口。
+  cliPath: '',
   apiBaseUrl: '',
   apiKey: '',
   apiModel: '',
@@ -474,16 +478,45 @@ interface StoryGenTestState {
 }
 const storyGenCliTest = reactive<StoryGenTestState>({ testing: false, result: null })
 const storyGenApiTest = reactive<StoryGenTestState>({ testing: false, result: null })
+const storyGenCliDetect = reactive({ detecting: false, message: '' })
 
 async function testStoryGenCli(): Promise<void> {
   storyGenCliTest.testing = true
   storyGenCliTest.result = null
   try {
-    storyGenCliTest.result = await api('/settings/test-story-cli', { method: 'POST' })
+    // cliPath 留空字符串就不传（后端会用已保存的值/走自动检测）；填了就直接送当前
+    // 输入框的值，哪怕还没点保存，方便先测一下路径对不对再决定要不要保存。
+    const body: Record<string, unknown> = {}
+    if (storyGenForm.cliPath.trim()) body.cliPath = storyGenForm.cliPath.trim()
+    storyGenCliTest.result = await api('/settings/test-story-cli', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    })
   } catch (err) {
     storyGenCliTest.result = { ok: false, message: err instanceof Error ? err.message : String(err) }
   } finally {
     storyGenCliTest.testing = false
+  }
+}
+
+async function detectStoryGenCliPath(): Promise<void> {
+  storyGenCliDetect.detecting = true
+  storyGenCliDetect.message = ''
+  try {
+    const result = await api<{ found: boolean; path: string | null; message?: string }>(
+      '/settings/detect-story-cli-path',
+      { method: 'POST' }
+    )
+    if (result.found && result.path) {
+      storyGenForm.cliPath = result.path
+      storyGenCliDetect.message = `检测到：${result.path}（记得点下面的"保存设置"才会生效）`
+    } else {
+      storyGenCliDetect.message = result.message ?? '自动检测未找到 claude CLI，请手动填写完整路径'
+    }
+  } catch (err) {
+    storyGenCliDetect.message = err instanceof Error ? err.message : String(err)
+  } finally {
+    storyGenCliDetect.detecting = false
   }
 }
 
@@ -816,6 +849,7 @@ interface SettingsResponse {
   storyGenApiKeySet: boolean
   storyGenApiModel: string | null
   storyGenApiMaxTokens: number
+  storyGenCliPath: string | null
 }
 
 async function loadSettings(): Promise<void> {
@@ -835,6 +869,7 @@ async function loadSettings(): Promise<void> {
   settingsForm.posterFontPath = data.posterFontPath ?? ''
 
   storyGenForm.provider = data.storyGenProvider ?? 'claude_cli'
+  storyGenForm.cliPath = data.storyGenCliPath ?? ''
   storyGenForm.apiBaseUrl = data.storyGenApiBaseUrl ?? ''
   storyGenForm.apiModel = data.storyGenApiModel ?? ''
   storyGenForm.apiMaxTokens = data.storyGenApiMaxTokens ?? 4096
@@ -909,6 +944,7 @@ async function saveSettings(): Promise<void> {
       customContentTypeHints: serializeKeyMapField(customContentTypeHintsForm),
       customProjectTemplates: serializeProjectTemplatesField(),
       storyGenProvider: storyGenForm.provider,
+      storyGenCliPath: storyGenForm.cliPath,
       storyGenApiBaseUrl: storyGenForm.apiBaseUrl,
       storyGenApiModel: storyGenForm.apiModel,
       storyGenApiMaxTokens: storyGenForm.apiMaxTokens
@@ -2577,6 +2613,23 @@ function statusLabel(status: string): string {
         </div>
       </div>
 
+      <template v-if="storyGenForm.provider === 'claude_cli'">
+        <div class="field">
+          <label>claude CLI 路径 <span class="field-badge">可选</span></label>
+          <div class="cli-path-row">
+            <input
+              v-model="storyGenForm.cliPath"
+              placeholder="留空 = 自动检测；找不到/找错了再手动填这里"
+            />
+            <button class="ghost" type="button" :disabled="storyGenCliDetect.detecting" @click="detectStoryGenCliPath">
+              {{ storyGenCliDetect.detecting ? '检测中…' : '自动检测' }}
+            </button>
+          </div>
+          <p v-if="storyGenCliDetect.message" class="field-help">{{ storyGenCliDetect.message }}</p>
+          <p class="field-help">默认走自动检测（PATH 查找 + 常见安装目录 + npm 全局 prefix），一般不用填。如果自动检测找不到，或者装在了自定义目录/换过 Node 版本导致检测到了错误的旧路径，点"自动检测"回填一次，确认没问题后记得点下面的"保存设置"；也可以直接手动粘贴 claude 可执行文件的完整路径。</p>
+        </div>
+      </template>
+
       <div v-if="storyGenForm.provider === 'claude_cli'" class="story-gen-test-block">
         <button class="ghost" :disabled="storyGenCliTest.testing" @click="testStoryGenCli">
           {{ storyGenCliTest.testing ? '测试中…' : '测试本机终端是否生效' }}
@@ -2584,7 +2637,7 @@ function statusLabel(status: string): string {
         <p v-if="storyGenCliTest.result" :class="['story-gen-test-result', storyGenCliTest.result.ok ? 'ok' : 'error']">
           {{ storyGenCliTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenCliTest.result.message }}
         </p>
-        <p class="field-help">点这个按钮会真的调用一次本机 <code>claude</code> 命令。如果失败，把上面的报错信息发给开发者，或者直接切换成下面的第三方 API 方式。</p>
+        <p class="field-help">点这个按钮会真的调用一次本机 <code>claude</code> 命令（如果上面填了路径，就用这个路径测）。如果失败，把上面的报错信息发给开发者，或者直接切换成下面的第三方 API 方式。</p>
       </div>
 
       <template v-if="storyGenForm.provider === 'api'">
@@ -4419,6 +4472,8 @@ body {
 .story-gen-provider-tab span { color: #71717a; font-size: 12px; line-height: 1.45; }
 .story-gen-provider-tab.active { border-color: #18181b; background: #18181b; color: white; }
 .story-gen-provider-tab.active span { color: #d4d4d8; }
+.cli-path-row { display: flex; gap: 8px; align-items: center; }
+.cli-path-row input { flex: 1; }
 .story-gen-test-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 0 14px; }
 .story-gen-test-result { margin: 0; font-size: 12px; line-height: 1.5; }
 .story-gen-test-result.ok { color: #16a34a; }

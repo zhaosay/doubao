@@ -65,6 +65,7 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "storyGenApiKey": None,
             "storyGenApiModel": None,
             "storyGenApiMaxTokens": 4096,
+            "storyGenCliPath": None,
         }
     d = dict(row)
     if not d.get("indexTtsBaseUrl"):
@@ -169,6 +170,11 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         conn.commit()
     if "storyGenApiMaxTokens" not in setting_cols:
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenApiMaxTokens" INTEGER NOT NULL DEFAULT 4096')
+        conn.commit()
+    if "storyGenCliPath" not in setting_cols:
+        # claude_cli 模式下手动覆盖路径，留空 = 走自动检测，见 story_generator.py 的
+        # _find_claude_candidates/_npm_global_prefix。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenCliPath" TEXT')
         conn.commit()
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     _POSTER_DDL_LEGACY_PRESET = """

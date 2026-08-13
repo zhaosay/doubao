@@ -310,6 +310,10 @@ model Setting {
   // 自由文本，不写死下拉选项。
   storyGenApiModel     String?
   storyGenApiMaxTokens Int     @default(4096)
+  // claude_cli 模式下的手动覆盖路径：留空 = 走自动检测(PATH 查找 + Windows 常见安装
+  // 目录扫描 + npm 全局 prefix 动态查询 + 僵尸 shim 识别)；填了就只认这一个路径，
+  // 给"自动检测都找不到/找到的是错的"这种情况一个逃生舱口。
+  storyGenCliPath String?
 
   updatedAt       DateTime @updatedAt
 }
