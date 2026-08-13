@@ -115,34 +115,133 @@ def _parse_scenes(content: str, source_label: str) -> list[dict]:
     return scenes
 
 
-def _claude_command() -> str | None:
-    """Find Claude Code CLI in GUI-launched packaged apps as well as normal shells."""
+def _npm_global_prefix() -> Path | None:
+    """查一下 npm 自己配置的全局安装目录(`npm config get prefix`)，而不是死认
+    %APPDATA%\\npm 这一个位置——用户可能用 nvm/volta 切换过 Node 版本，或者手动
+    改过 `npm config set prefix`，claude-code 实际装的目录跟默认位置对不上，
+    是"装到别的目录"最常见的成因之一。查不到就返回 None，不阻塞后面兜底的固定路径。
+    """
+    npm_cmd = "npm.cmd" if platform.system() == "Windows" else "npm"
+    npm_path = shutil.which(npm_cmd)
+    if not npm_path:
+        return None
+    try:
+        result = subprocess.run(
+            [npm_path, "config", "get", "prefix"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    prefix = result.stdout.strip()
+    return Path(prefix) if prefix else None
+
+
+# .cmd/.bat/.ps1 shim 脚本自己只是个跳板，真正的可执行文件是脚本内部拼出来的一段路径
+# (比如 `"%~dp0\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*`)。
+# npm 全局目录搬过家、用 nvm 切过 Node 版本、或者重装到了别的地方之后，PATH 里常常
+# 留着一个"物理文件还在，但内部引用的真身已经被移走/删掉"的僵尸 shim——shutil.which
+# 和候选目录扫描都只检查 shim 文件本身存不存在，检查不出这种情况，直接拿去跑只会得到
+# Windows cmd.exe 那句不知所云的"不是内部或外部命令"，比"压根没装"更让人摸不着头脑。
+_CLAUDE_SHIM_TARGET_RE = re.compile(r'"([^"]+\.(?:exe|js|cjs|mjs))"')
+
+
+def _shim_target(path: str) -> str | None:
+    """读一下 shim 脚本内容，抠出它内部引用的真正可执行文件路径。传进来的不是
+    .cmd/.bat/.ps1(比如已经是真身 .exe，或者是 PATH 上的 POSIX shell 脚本)，
+    或者读不出引用路径，统一返回 None——意味着"没法验证，姑且相信它"，不阻塞。
+    npm 生成的 shim 里这段路径通常是用 `%~dp0`(批处理变量，代表"这个 .cmd 文件自己
+    所在的目录")拼出来的相对写法，不展开这个变量的话，就算真身文件确实还在，
+    也会被误判成"路径不存在"——所以这里手动把 %~dp0 换成 shim 自己的父目录。
+    """
+    if not path.lower().endswith((".cmd", ".bat", ".ps1")):
+        return None
+    try:
+        content = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    match = _CLAUDE_SHIM_TARGET_RE.search(content)
+    if not match:
+        return None
+    target = match.group(1)
+    shim_dir = str(Path(path).resolve().parent)
+    target = re.sub(r"%~dp0", shim_dir + os.sep, target, flags=re.IGNORECASE)
+    return target
+
+
+def _is_usable(path: str) -> bool:
+    """候选路径本身要先存在；如果它是个 shim，还要再确认它内部引用的真身也存在，
+    不然就是前面说的"僵尸 shim"。"""
+    if not Path(path).exists():
+        return False
+    target = _shim_target(path)
+    return Path(target).exists() if target else True
+
+
+def _find_claude_candidates() -> list[str]:
+    """收集所有"看起来像 claude 命令"的候选路径，不做可用性验证——
+    _claude_command() 会在这份列表上再筛一遍 _is_usable。"""
+    candidates: list[str] = []
     for name in ("claude", "claude.cmd", "claude.exe"):
         found = shutil.which(name)
         if found:
-            return found
+            candidates.append(found)
 
-    if platform.system() != "Windows":
-        return None
+    if platform.system() == "Windows":
+        candidate_dirs = [
+            _npm_global_prefix(),
+            Path(os.environ.get("APPDATA", "")) / "npm",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Volta" / "bin",
+            Path(os.environ.get("PROGRAMFILES", "")) / "nodejs",
+            Path(os.environ.get("PROGRAMFILES(X86)", "")) / "nodejs",
+            Path(os.environ.get("USERPROFILE", "")) / "scoop" / "shims",
+        ]
+        for directory in candidate_dirs:
+            if not directory:
+                continue
+            for name in ("claude.cmd", "claude.exe", "claude"):
+                candidate = directory / name
+                if candidate.exists():
+                    candidates.append(str(candidate))
 
-    candidate_dirs = [
-        Path(os.environ.get("APPDATA", "")) / "npm",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Volta" / "bin",
-        Path(os.environ.get("PROGRAMFILES", "")) / "nodejs",
-        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "nodejs",
-    ]
-    for directory in candidate_dirs:
-        if not directory:
-            continue
-        for name in ("claude.cmd", "claude.exe", "claude"):
-            candidate = directory / name
-            if candidate.exists():
-                return str(candidate)
+    # 去重但保持顺序：shutil.which 找到的排最前面，优先级最高。
+    seen: set[str] = set()
+    deduped = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            deduped.append(c)
+    return deduped
+
+
+def _claude_command() -> str | None:
+    """Find Claude Code CLI in GUI-launched packaged apps as well as normal shells.
+    候选路径按优先级过一遍可用性验证(见 _is_usable)，跳过僵尸 shim，
+    返回第一个真正能用的；一个能用的都没有就返回 None。"""
+    for candidate in _find_claude_candidates():
+        if _is_usable(candidate):
+            return candidate
     return None
 
 
 def _missing_claude_message() -> str:
+    # 找到过候选(比如 PATH 上有 claude.cmd)，但验证下来都是僵尸 shim(内部引用的
+    # claude.exe/claude.js 已经不存在)——大概率是重装到了别的目录、或者用 nvm/volta
+    # 切换过 Node 版本，留下了旧的 shim 残留，这跟"压根没装"是两个问题，分开提示。
+    broken = _find_claude_candidates()
+    if broken:
+        broken_list = "、".join(broken[:3])
+        return (
+            f"找到了 claude 命令（{broken_list}），但它指向的实际程序已经不存在——"
+            "大概率是 Claude Code 重装到了别的目录、或者切换过 Node 版本后留下的旧文件。"
+            "建议删掉这个文件重新安装 Claude Code（npm install -g "
+            "@anthropic-ai/claude-code），或者确认 PATH 里指向的是当前真正在用的安装目录。"
+            "也可以在设置页切换成第三方 API 方式。"
+        )
     return (
         "本机没有找到 claude 命令（Claude Code CLI）。如果终端里能运行 claude，"
         "请重启本应用；Windows 用户还要确认 Claude Code 的安装目录已加入系统 PATH。"
