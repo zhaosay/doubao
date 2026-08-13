@@ -425,14 +425,19 @@ def test_story_api(body: TestStoryApiBody):
     """测第三方 Anthropic Messages API 兼容服务是否配置正确、能不能连通。
     body 里的字段是可选的覆盖值：填了就用填的值测，没填就用已保存在 Setting 表里的值——
     这样用户在设置页改完 Base URL/API Key 还没点保存，也能先测一下再决定要不要保存。
+    这个接口是设置页按钮直接调用的，任何配置/网络/返回格式问题都应该变成
+    {ok:false,message}，不要让 FastAPI 返回 500。
     """
-    with get_connection() as conn:
-        current = get_settings(conn)
+    try:
+        with get_connection() as conn:
+            current = get_settings(conn)
 
-    base_url = body.baseUrl if body.baseUrl is not None else current.get("storyGenApiBaseUrl")
-    api_key = body.apiKey if body.apiKey is not None else current.get("storyGenApiKey")
-    model = body.model if body.model is not None else current.get("storyGenApiModel")
-    max_tokens = body.maxTokens if body.maxTokens is not None else current.get("storyGenApiMaxTokens")
+        base_url = body.baseUrl if body.baseUrl is not None else current.get("storyGenApiBaseUrl")
+        api_key = body.apiKey if body.apiKey is not None else current.get("storyGenApiKey")
+        model = body.model if body.model is not None else current.get("storyGenApiModel")
+        max_tokens = body.maxTokens if body.maxTokens is not None else current.get("storyGenApiMaxTokens")
 
-    ok, message = test_anthropic_api(base_url, api_key, model, max_tokens)
-    return {"ok": ok, "message": message}
+        ok, message = test_anthropic_api(base_url, api_key, model, max_tokens)
+        return {"ok": ok, "message": message}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"测试第三方 API 失败：{exc}"}

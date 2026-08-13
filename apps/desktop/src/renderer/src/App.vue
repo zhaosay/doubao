@@ -749,7 +749,14 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`${res.status} ${text}`)
+    let message = text
+    try {
+      const parsed = JSON.parse(text)
+      message = typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail ?? parsed)
+    } catch {
+      // keep raw response text
+    }
+    throw new Error(message ? `${res.status} ${message}` : `${res.status} ${res.statusText}`)
   }
   return res.json() as Promise<T>
 }

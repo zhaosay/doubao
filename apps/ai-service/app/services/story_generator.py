@@ -245,15 +245,31 @@ def call_anthropic_api(
     except ValueError as exc:
         raise StoryGenerationError(f"第三方 API 返回的不是合法 JSON: {resp.text[:2000]}") from exc
 
-    blocks = data.get("content") if isinstance(data, dict) else None
-    if not isinstance(blocks, list) or not blocks:
-        raise StoryGenerationError(f"第三方 API 返回格式不对(缺少 content 字段，不是 Anthropic Messages API 格式?): {data!r}")
+    if not isinstance(data, dict):
+        raise StoryGenerationError(f"第三方 API 返回格式不对(顶层不是 JSON object): {data!r}")
 
-    text_parts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
-    content = "".join(text_parts).strip()
-    if not content:
-        raise StoryGenerationError(f"第三方 API 没有返回文本内容: {data!r}")
-    return content
+    # Anthropic Messages API: {"content": [{"type":"text", "text":"..."}]}
+    blocks = data.get("content")
+    if isinstance(blocks, list) and blocks:
+        text_parts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+        content = "".join(text_parts).strip()
+        if content:
+            return content
+
+    # Some third-party gateways expose an OpenAI-compatible response shape even when the
+    # request endpoint is compatible enough for our payload. Accept it to avoid a 500-like UX.
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first, dict) else None
+        content = message.get("content") if isinstance(message, dict) else first.get("text")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    raise StoryGenerationError(
+        "第三方 API 返回格式不兼容：没有找到 Anthropic content 文本，"
+        f"也没有找到 OpenAI choices 文本。返回内容：{str(data)[:2000]}"
+    )
 
 
 def _attempt_generate(prompt: str, provider_config: dict) -> list[dict]:
