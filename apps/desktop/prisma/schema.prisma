@@ -257,6 +257,10 @@ model Setting {
   // 不用每次都改代码。留空则用 ark_client.py 里的默认值。
   arkImageModel   String?
   arkVideoModel   String?
+  // 纯文本对话模型（chat/completions），跟图片/视频模型是不同的模型 ID。目前只给
+  // "AI优化提示词"这一个功能用——留空就不走 Ark，这个功能会自动回退到已配置的
+  // storyGenProvider(claude_cli/api)。
+  arkTextModel    String?
   indexTtsBaseUrl String?  @default("http://localhost:7860") // 局域网 IndexTTS 服务地址
 
   // 目录设置：生成产物（角色图/场景图/分镜图片视频配音）默认存在 <项目根目录>/output 下，

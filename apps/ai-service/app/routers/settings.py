@@ -27,6 +27,9 @@ class UpdateSettingsBody(BaseModel):
     arkBaseUrl: Optional[str] = None
     arkImageModel: Optional[str] = None
     arkVideoModel: Optional[str] = None
+    # 纯文本对话模型，给"AI优化提示词"功能用，跟出图/出视频模型是两个不同的模型 ID。
+    # 留空 = 不走 Ark，这个功能自动回退到 storyGenProvider(claude_cli/api)。
+    arkTextModel: Optional[str] = None
     indexTtsBaseUrl: Optional[str] = None
     # 目录设置：留空字符串表示"清空自定义值，恢复默认目录"，跟 None(不修改这个字段)是两回事，
     # 所以下面统一用「传了空字符串就存 None」而不是「空字符串当成没传」。
@@ -230,6 +233,7 @@ def read_settings():
         "arkBaseUrl": s.get("arkBaseUrl"),
         "arkImageModel": s.get("arkImageModel"),
         "arkVideoModel": s.get("arkVideoModel"),
+        "arkTextModel": s.get("arkTextModel"),
         "indexTtsBaseUrl": s.get("indexTtsBaseUrl"),
         "outputDir": s.get("outputDir"),
         "exportDir": s.get("exportDir"),
@@ -271,6 +275,9 @@ def update_settings(body: UpdateSettingsBody):
         )
         ark_video_model = (
             body.arkVideoModel if body.arkVideoModel is not None else current.get("arkVideoModel")
+        )
+        ark_text_model = (
+            body.arkTextModel if body.arkTextModel is not None else current.get("arkTextModel")
         )
         indextts_base_url = (
             body.indexTtsBaseUrl if body.indexTtsBaseUrl is not None else current.get("indexTtsBaseUrl")
@@ -369,19 +376,20 @@ def update_settings(body: UpdateSettingsBody):
 
         if existing is None:
             conn.execute(
-                'INSERT INTO "Setting" (id, arkApiKey, arkBaseUrl, arkImageModel, arkVideoModel, '
+                'INSERT INTO "Setting" (id, arkApiKey, arkBaseUrl, arkImageModel, arkVideoModel, arkTextModel, '
                 "indexTtsBaseUrl, outputDir, exportDir, exportBurnSubtitles, exportBgmPath, "
                 "exportBgmVolume, exportUseBgm, "
                 "customStylePrefixes, customStyleHints, customContentTypeHints, customProjectTemplates, "
                 "posterFontPath, storyGenProvider, storyGenApiBaseUrl, storyGenApiKey, storyGenApiModel, "
                 "storyGenApiMaxTokens, storyGenCliPath, updatedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "singleton",
                     ark_api_key,
                     ark_base_url,
                     ark_image_model,
                     ark_video_model,
+                    ark_text_model,
                     indextts_base_url,
                     output_dir,
                     export_dir,
@@ -406,6 +414,7 @@ def update_settings(body: UpdateSettingsBody):
         else:
             conn.execute(
                 'UPDATE "Setting" SET arkApiKey = ?, arkBaseUrl = ?, arkImageModel = ?, arkVideoModel = ?, '
+                "arkTextModel = ?, "
                 "indexTtsBaseUrl = ?, outputDir = ?, exportDir = ?, exportBurnSubtitles = ?, "
                 "exportBgmPath = ?, exportBgmVolume = ?, exportUseBgm = ?, "
                 "customStylePrefixes = ?, customStyleHints = ?, customContentTypeHints = ?, "
@@ -417,6 +426,7 @@ def update_settings(body: UpdateSettingsBody):
                     ark_base_url,
                     ark_image_model,
                     ark_video_model,
+                    ark_text_model,
                     indextts_base_url,
                     output_dir,
                     export_dir,

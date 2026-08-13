@@ -423,6 +423,7 @@ const settingsForm = reactive({
   arkBaseUrl: '',
   arkImageModel: '',
   arkVideoModel: '',
+  arkTextModel: '',
   indexTtsBaseUrl: '',
   // 目录设置：留空 = 用默认目录（<项目根目录>/output）
   outputDir: '',
@@ -824,6 +825,47 @@ async function checkHealth(): Promise<void> {
   }
 }
 
+// ---- "AI优化提示词"通用小工具：海报/文生图/图生视频/分镜画面描述/角色设定图/
+// 场景参考图，凡是有一个"画面描述"输入框的地方都能挂这个按钮。用 key 区分各个
+// 输入框各自的 loading/报错状态，不用为每个位置单独声明一份 reactive 状态。
+interface PromptOptimizeState {
+  optimizing: boolean
+  error: string | null
+}
+const promptOptimizeStates = reactive<Record<string, PromptOptimizeState>>({})
+
+function promptOptimizeState(key: string): PromptOptimizeState {
+  if (!promptOptimizeStates[key]) promptOptimizeStates[key] = { optimizing: false, error: null }
+  return promptOptimizeStates[key]
+}
+
+async function optimizePromptField(
+  key: string,
+  currentValue: string,
+  context: string,
+  applyResult: (optimized: string) => void
+): Promise<void> {
+  const state = promptOptimizeState(key)
+  const prompt = currentValue.trim()
+  if (!prompt) {
+    state.error = '先写点内容再优化'
+    return
+  }
+  state.optimizing = true
+  state.error = null
+  try {
+    const result = await api<{ optimizedPrompt: string; engine: string }>('/prompts/optimize', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, context })
+    })
+    applyResult(result.optimizedPrompt)
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err)
+  } finally {
+    state.optimizing = false
+  }
+}
+
 // ---- 设置 ----
 interface SettingsResponse {
   arkApiKeySet: boolean
@@ -831,6 +873,7 @@ interface SettingsResponse {
   arkBaseUrl: string | null
   arkImageModel: string | null
   arkVideoModel: string | null
+  arkTextModel: string | null
   indexTtsBaseUrl: string | null
   outputDir: string | null
   exportDir: string | null
@@ -859,6 +902,7 @@ async function loadSettings(): Promise<void> {
   settingsForm.arkBaseUrl = data.arkBaseUrl ?? ''
   settingsForm.arkImageModel = data.arkImageModel ?? ''
   settingsForm.arkVideoModel = data.arkVideoModel ?? ''
+  settingsForm.arkTextModel = data.arkTextModel ?? ''
   settingsForm.indexTtsBaseUrl = data.indexTtsBaseUrl ?? ''
   settingsForm.outputDir = data.outputDir ?? ''
   settingsForm.exportDir = data.exportDir ?? ''
@@ -932,6 +976,7 @@ async function saveSettings(): Promise<void> {
       arkBaseUrl: settingsForm.arkBaseUrl,
       arkImageModel: settingsForm.arkImageModel,
       arkVideoModel: settingsForm.arkVideoModel,
+      arkTextModel: settingsForm.arkTextModel,
       outputDir: settingsForm.outputDir,
       exportDir: settingsForm.exportDir,
       exportBurnSubtitles: settingsForm.exportBurnSubtitles,
@@ -1383,6 +1428,31 @@ async function deleteTextImage(imageId: string): Promise<void> {
   if (!window.confirm('删除这张图，确定吗？（磁盘上已经生成好的文件不会被删除）')) return
   await api(`/text-images/${imageId}`, { method: 'DELETE' })
   await loadTextImages()
+}
+
+// "以此图参考生成图片"：从文生图列表跳到创建表单，带上原提示词(可改)，图片本身先放
+// 一边等用户自己决定放进角色参考图还是场景参考图——两类参考图对生成效果影响不同
+// (人物长相 vs 环境氛围)，不替用户瞎猜。
+const pendingTextImageReference = ref<{ path: string; url: string } | null>(null)
+
+function useTextImageAsReference(item: TextImageItem): void {
+  if (!item.filePath) return
+  textImageForm.prompt = item.prompt
+  pendingTextImageReference.value = { path: item.filePath, url: item.url ?? '' }
+  textImagesTab.value = 'create'
+}
+
+function addPendingReferenceTo(kind: 'character' | 'scene'): void {
+  const pending = pendingTextImageReference.value
+  if (!pending) return
+  const existing = splitPaths(textImageRefPathInput[kind])
+  if (!existing.includes(pending.path)) existing.push(pending.path)
+  textImageRefPathInput[kind] = existing.join(',')
+  pendingTextImageReference.value = null
+}
+
+function dismissPendingTextImageReference(): void {
+  pendingTextImageReference.value = null
 }
 
 const generatingScene = reactive<Record<string, boolean>>({})
@@ -2565,6 +2635,11 @@ function statusLabel(status: string): string {
           最准确的名单以控制台「模型广场」里实际展示的为准，这里列的只是写这段代码时查到的参考。
         </p></details>
       </div>
+      <div class="field">
+        <label>Ark 文本对话模型 ID <span class="field-badge">"AI优化提示词"用</span></label>
+        <input v-model="settingsForm.arkTextModel" placeholder="比如 doubao-seed-1.6" />
+        <p class="field-help">留空则各处"AI优化提示词"按钮自动改用下面「AI生成剧本配置」里配置的方式(本机 claude CLI / 第三方 API)。填了这里就优先走 Ark，速度更快。</p>
+      </div>
       </section>
       </template>
 
@@ -3002,6 +3077,17 @@ function statusLabel(status: string): string {
             <div class="field">
               <label>提示词<span class="field-badge">描述这张海报的背景要画什么</span></label>
               <textarea v-model="posterForm.promptText" rows="3" placeholder="比如：海外医美诊所前台，专业整洁的接待场景" />
+              <div class="ai-optimize-row">
+                <button
+                  type="button"
+                  class="ghost"
+                  :disabled="promptOptimizeState('posterPrompt').optimizing"
+                  @click="optimizePromptField('posterPrompt', posterForm.promptText, '海报背景画面描述', (v) => (posterForm.promptText = v))"
+                >
+                  {{ promptOptimizeState('posterPrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
+                </button>
+              </div>
+              <p v-if="promptOptimizeState('posterPrompt').error" class="ai-optimize-error">{{ promptOptimizeState('posterPrompt').error }}</p>
             </div>
             <div class="field">
               <label>排版方式</label>
@@ -3161,8 +3247,8 @@ function statusLabel(status: string): string {
          独立的一级功能，不挂在任何视频项目下面，不经过 Project/Story/Scene/Shot
          结构，也没有配音/字幕/多段拼接——单张参考图进，单条视频出。 -->
     <section v-else-if="view === 'videoGen'" class="panel posters-page">
-      <div class="projects-page-head">
-        <div>
+      <div class="projects-page-head video-gen-page-head">
+        <div class="video-gen-head-titles">
           <h1>{{ videoGenTab === 'create' ? '图生视频' : '视频列表' }}</h1>
           <p class="hint">{{ videoGenTab === 'create' ? '上传一张参考图 + 写一段画面/运镜描述，直接生成一条视频（不需要先建项目/写剧本）' : '所有生成过的视频，不分项目' }}</p>
         </div>
@@ -3170,42 +3256,61 @@ function statusLabel(status: string): string {
       </div>
 
       <template v-if="videoGenTab === 'create'">
+      <div class="poster-form-main video-gen-form-main">
         <section class="poster-form-section">
           <div class="poster-step-head"><span>1</span><div><strong>参考图</strong><small>作为视频的起始帧</small></div></div>
-          <div class="field">
+          <div class="field field-inline">
             <label>参考图<span class="field-badge">必填</span></label>
-            <div class="ref-path-row">
-              <input v-model="videoGenRefPathInput.new" placeholder="本地图片路径" />
-              <button class="ghost" @click="pickReferenceFile(videoGenRefPathInput, 'new', false)">选择文件…</button>
+            <div class="field-inline-content">
+              <div class="ref-path-row">
+                <input v-model="videoGenRefPathInput.new" placeholder="本地图片路径" />
+                <button class="ghost" @click="pickReferenceFile(videoGenRefPathInput, 'new', false)">选择文件…</button>
+                <img
+                  v-if="pathPreview(videoGenRefPathInput.new)"
+                  class="ref-pick-preview ref-pick-preview-inline"
+                  :src="pathPreview(videoGenRefPathInput.new) ?? ''"
+                />
+              </div>
             </div>
-            <img
-              v-if="pathPreview(videoGenRefPathInput.new)"
-              class="ref-pick-preview"
-              :src="pathPreview(videoGenRefPathInput.new) ?? ''"
-            />
           </div>
         </section>
 
         <section class="poster-form-section">
           <div class="poster-step-head"><span>2</span><div><strong>画面/运镜描述</strong><small>喂给 Seedance 的提示词</small></div></div>
           <div class="field">
-            <textarea v-model="videoGenForm.prompt" rows="4" placeholder="比如：镜头缓慢推进，女孩转头微笑，微风吹动头发" />
-            <select class="manual-inline-select" @change="onVideoGenManualSelectChange">
-              <option value="">+ 从分镜与运镜手册插入构图/灯光/调色/运镜/转场等术语…</option>
-              <optgroup v-for="g in videoGenManualGroups" :key="g.label" :label="g.label">
-                <option v-for="(opt, i) in g.options" :key="i" :value="opt.en">{{ opt.zh }}</option>
-              </optgroup>
-            </select>
+            <div class="video-gen-prompt-row">
+              <textarea v-model="videoGenForm.prompt" rows="3" placeholder="比如：镜头缓慢推进，女孩转头微笑，微风吹动头发" />
+              <select class="manual-inline-select" @change="onVideoGenManualSelectChange">
+                <option value="">+ 从手册插入构图/灯光/调色/运镜/转场等术语…</option>
+                <optgroup v-for="g in videoGenManualGroups" :key="g.label" :label="g.label">
+                  <option v-for="(opt, i) in g.options" :key="i" :value="opt.en">{{ opt.zh }}</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="ai-optimize-row">
+              <button
+                type="button"
+                class="ghost"
+                :disabled="promptOptimizeState('videoGenPrompt').optimizing"
+                @click="optimizePromptField('videoGenPrompt', videoGenForm.prompt, '图生视频的画面/运镜描述', (v) => (videoGenForm.prompt = v))"
+              >
+                {{ promptOptimizeState('videoGenPrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
+              </button>
+            </div>
+            <p v-if="promptOptimizeState('videoGenPrompt').error" class="ai-optimize-error">{{ promptOptimizeState('videoGenPrompt').error }}</p>
           </div>
         </section>
 
         <section class="poster-form-section">
           <div class="poster-step-head"><span>3</span><div><strong>生成比例</strong><small>决定这条视频的画幅</small></div></div>
-          <div class="field">
-            <div class="style-mode-picker text-image-choice-row">
-              <label v-for="r in mediaRatios" :key="r.id">
-                <input type="radio" :value="r.id" v-model="videoGenForm.ratio" /> {{ r.label }}
-              </label>
+          <div class="field field-inline">
+            <label>比例</label>
+            <div class="field-inline-content">
+              <div class="style-mode-picker text-image-choice-row">
+                <label v-for="r in mediaRatios" :key="r.id">
+                  <input type="radio" :value="r.id" v-model="videoGenForm.ratio" /> {{ r.label }}
+                </label>
+              </div>
             </div>
           </div>
         </section>
@@ -3217,6 +3322,7 @@ function statusLabel(status: string): string {
             @click="createVideoGeneration"
           >{{ creatingVideoGen ? '生成中…' : '生成视频' }}</button>
         </div>
+      </div>
       </template>
 
       <template v-else>
@@ -3261,12 +3367,35 @@ function statusLabel(status: string): string {
 
       <template v-if="textImagesTab === 'create'">
         <div class="text-image-create-panel">
+          <section v-if="pendingTextImageReference" class="pending-ref-panel">
+            <img :src="pathPreview(pendingTextImageReference.path) ?? pendingTextImageReference.url ?? ''" class="pending-ref-thumb" />
+            <div class="pending-ref-info">
+              <strong>从"以此图参考生成图片"带过来的图</strong>
+              <p class="hint">选这张图要放进哪类参考图，或者不需要就直接关掉。</p>
+              <div class="pending-ref-actions">
+                <button class="ghost" @click="addPendingReferenceTo('character')">加入角色参考图</button>
+                <button class="ghost" @click="addPendingReferenceTo('scene')">加入场景参考图</button>
+                <button class="ghost" @click="dismissPendingTextImageReference">不需要，关闭</button>
+              </div>
+            </div>
+          </section>
           <section class="text-image-form-card">
             <div class="poster-step-head"><span>1</span><div><strong>画面描述</strong><small>喂给 Seedream 的提示词</small></div></div>
             <div class="field text-image-prompt-field">
               <label>提示词</label>
               <textarea v-model="textImageForm.prompt" rows="7" placeholder="比如：夜晚城市天台，霓虹灯背景，一只猫坐在栏杆上，电影感，雨后反光地面" />
               <p class="field-help">只描述画面本身。不要在这里写标题文字；这条功能会直接输出 AI 原图。</p>
+              <div class="ai-optimize-row">
+                <button
+                  type="button"
+                  class="ghost"
+                  :disabled="promptOptimizeState('textImagePrompt').optimizing"
+                  @click="optimizePromptField('textImagePrompt', textImageForm.prompt, '文生图画面描述', (v) => (textImageForm.prompt = v))"
+                >
+                  {{ promptOptimizeState('textImagePrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
+                </button>
+              </div>
+              <p v-if="promptOptimizeState('textImagePrompt').error" class="ai-optimize-error">{{ promptOptimizeState('textImagePrompt').error }}</p>
             </div>
 
             <div class="text-image-options-grid">
@@ -3373,6 +3502,9 @@ function statusLabel(status: string): string {
               <div class="poster-card-actions">
                 <button class="ghost" :disabled="regeneratingTextImage[item.id]" @click="regenerateTextImage(item.id)">
                   {{ regeneratingTextImage[item.id] ? '生成中…' : '重新生成' }}
+                </button>
+                <button class="ghost" :disabled="!item.filePath" @click="useTextImageAsReference(item)">
+                  以此图参考生成图片
                 </button>
                 <button class="ghost danger" @click="deleteTextImage(item.id)">删除</button>
               </div>
@@ -3632,6 +3764,17 @@ function statusLabel(status: string): string {
               placeholder="留空则只用角色名让模型自由发挥，比如：黑色长发，校服，温柔笑容"
               @change="saveCharacterPrompt(c)"
             />
+            <div class="ai-optimize-row">
+              <button
+                type="button"
+                class="ghost"
+                :disabled="promptOptimizeState(`characterPrompt-${c.id}`).optimizing"
+                @click="optimizePromptField(`characterPrompt-${c.id}`, c.prompt ?? '', `角色「${c.name}」的外观设定图描述`, (v) => { c.prompt = v; saveCharacterPrompt(c) })"
+              >
+                {{ promptOptimizeState(`characterPrompt-${c.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
+              </button>
+            </div>
+            <p v-if="promptOptimizeState(`characterPrompt-${c.id}`).error" class="ai-optimize-error">{{ promptOptimizeState(`characterPrompt-${c.id}`).error }}</p>
             <div class="character-actions">
               <button :disabled="generatingCharacter[c.id] || c.status === 'running'" @click="generateCharacter(c.id)">
                 {{ c.status === 'completed' ? '重新生成设定图' : '生成设定图' }}
@@ -3716,8 +3859,17 @@ function statusLabel(status: string): string {
                     @change="saveScene(scene)"
                     @click.stop
                   />
+                  <button
+                    type="button"
+                    class="ghost"
+                    :disabled="promptOptimizeState(`sceneSummary-${scene.id}`).optimizing"
+                    @click.stop="optimizePromptField(`sceneSummary-${scene.id}`, scene.summary ?? '', '短剧场次描述，同时也是这场戏场景参考图的生成提示词', (v) => { scene.summary = v; saveScene(scene) })"
+                  >
+                    {{ promptOptimizeState(`sceneSummary-${scene.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
+                  </button>
                   <button class="ghost danger" @click.stop="deleteScene(scene.id)">删除场次</button>
                 </div>
+                <p v-if="promptOptimizeState(`sceneSummary-${scene.id}`).error" class="ai-optimize-error">{{ promptOptimizeState(`sceneSummary-${scene.id}`).error }}</p>
                 <div class="scene-detail-meta-row">
                   <span class="hint">场次公共参数：以下设置会应用到本场所有镜头 · 第{{ scene.order + 1 }}场 · {{ scene.shots.length }} 镜</span>
                   <div class="scene-structure-actions">
@@ -4111,6 +4263,17 @@ function statusLabel(status: string): string {
                               <option v-for="(opt, i) in g.options" :key="i" :value="opt.en">{{ opt.zh }}</option>
                             </optgroup>
                           </select>
+                          <div class="ai-optimize-row">
+                            <button
+                              type="button"
+                              class="ghost"
+                              :disabled="promptOptimizeState(`shotDrawPrompt-${shot.id}`).optimizing"
+                              @click="optimizePromptField(`shotDrawPrompt-${shot.id}`, shot.drawPrompt ?? '', '短剧分镜的画面描述', (v) => { shot.drawPrompt = v; saveShot(shot) })"
+                            >
+                              {{ promptOptimizeState(`shotDrawPrompt-${shot.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
+                            </button>
+                          </div>
+                          <p v-if="promptOptimizeState(`shotDrawPrompt-${shot.id}`).error" class="ai-optimize-error">{{ promptOptimizeState(`shotDrawPrompt-${shot.id}`).error }}</p>
                           <p v-if="!refImagePathsInput[shot.id]?.trim() && !(scene.status === 'completed' && scene.refImagePath)" class="hint hint-warning">
                             这场戏的场景参考图还没生成完成，现在生成这一镜不会带环境一致性参考图（背景/光线可能跟其它镜头对不上）。
                             先去上面把场景参考图生成好，再回来点生成/重新生成。
@@ -4474,6 +4637,12 @@ body {
 .story-gen-provider-tab.active span { color: #d4d4d8; }
 .cli-path-row { display: flex; gap: 8px; align-items: center; }
 .cli-path-row input { flex: 1; }
+.ai-optimize-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.ai-optimize-error { margin: 4px 0 0; font-size: 12px; color: #dc2626; }
+.pending-ref-panel { display: flex; gap: 12px; align-items: flex-start; padding: 12px; margin-bottom: 12px; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 10px; }
+.pending-ref-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.pending-ref-info { display: flex; flex-direction: column; gap: 4px; }
+.pending-ref-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
 .story-gen-test-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 0 14px; }
 .story-gen-test-result { margin: 0; font-size: 12px; line-height: 1.5; }
 .story-gen-test-result.ok { color: #16a34a; }
@@ -5191,6 +5360,18 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .poster-form-section .field { margin-bottom: 16px; gap: 7px; }
 .ui-v2 .poster-form-section .field:last-child { margin-bottom: 0; }
 .ui-v2 .poster-form-section .field > label { font-weight: 650; color: #27272a; }
+
+/* 图生视频表单精简：label 和单行输入内容放一行，不再各占一行浪费竖向空间；
+   标题+说明合并到一行显示，尽量让整个创建表单在一屏内看完。 */
+.video-gen-page-head .video-gen-head-titles { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
+.video-gen-page-head .video-gen-head-titles h1 { flex-shrink: 0; }
+.video-gen-page-head .video-gen-head-titles p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.video-gen-form-main { max-width: 720px; }
+.ui-v2 .field-inline { display: flex; flex-direction: row; align-items: center; gap: 12px; }
+.ui-v2 .field-inline > label { flex-shrink: 0; min-width: 64px; margin: 0; }
+.ui-v2 .field-inline > .field-inline-content { flex: 1; min-width: 0; }
+.video-gen-prompt-row { display: flex; flex-direction: column; gap: 8px; }
+.ref-pick-preview-inline { height: 34px; width: 34px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
 .ui-v2 .poster-orientation-picker { display: flex; gap: 8px; }
 .ui-v2 .poster-orientation-picker label {
   display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 7px 12px;

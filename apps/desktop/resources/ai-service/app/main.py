@@ -13,6 +13,7 @@ from app.routers import (
     poster_templates,
     posters,
     projects,
+    prompts,
     scenes,
     settings,
     shots,
@@ -51,6 +52,7 @@ app.include_router(poster_templates.router)
 app.include_router(video_generations.router)
 app.include_router(text_images.router)
 app.include_router(media_ratios.router)
+app.include_router(prompts.router)
 
 DEFAULT_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 

@@ -60,6 +60,7 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "customContentTypeHints": None,
             "customProjectTemplates": None,
             "posterFontPath": None,
+            "arkTextModel": None,
             "storyGenProvider": "claude_cli",
             "storyGenApiBaseUrl": None,
             "storyGenApiKey": None,
@@ -175,6 +176,11 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         # claude_cli 模式下手动覆盖路径，留空 = 走自动检测，见 story_generator.py 的
         # _find_claude_candidates/_npm_global_prefix。
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenCliPath" TEXT')
+        conn.commit()
+    if "arkTextModel" not in setting_cols:
+        # "AI优化提示词"功能用的纯文本对话模型，留空就回退到 storyGenProvider
+        # (claude_cli/api)，见 routers/prompts.py。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "arkTextModel" TEXT')
         conn.commit()
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     _POSTER_DDL_LEGACY_PRESET = """

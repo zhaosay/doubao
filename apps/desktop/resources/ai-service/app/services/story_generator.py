@@ -394,6 +394,24 @@ def call_anthropic_api(
     )
 
 
+def generate_freeform_text(prompt: str, provider_config: dict) -> str:
+    """跟 _attempt_generate 复用同一套 claude_cli/api 调用逻辑，但不做"必须解析出
+    JSON 场次数组"这一步——给"AI优化提示词"这种只要一段纯文本回复的场景用。
+    provider_config 形状跟 _attempt_generate 一致：{"provider", "baseUrl", "apiKey",
+    "model", "maxTokens", "cliPath"}。
+    """
+    provider = provider_config.get("provider", DEFAULT_STORY_GEN_PROVIDER)
+    if provider == "api":
+        return call_anthropic_api(
+            prompt,
+            base_url=provider_config["baseUrl"],
+            api_key=provider_config["apiKey"],
+            model=provider_config["model"],
+            max_tokens=provider_config.get("maxTokens") or DEFAULT_STORY_GEN_API_MAX_TOKENS,
+        )
+    return _call_claude_cli(prompt, provider_config.get("cliPath"))
+
+
 def _attempt_generate(prompt: str, provider_config: dict) -> list[dict]:
     """跑一次生成 + 解析，失败就抛 StoryGenerationError，不在这里做重试判断。
     provider_config 形状: {"provider": "claude_cli"|"api", "baseUrl", "apiKey",

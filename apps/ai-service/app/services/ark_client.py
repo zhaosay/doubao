@@ -217,6 +217,46 @@ def generate_image(
     return _with_retry("Seedream 图片生成", _do_request)
 
 
+def chat_completion(
+    *,
+    api_key: str,
+    prompt: str,
+    model: str,
+    system: Optional[str] = None,
+    base_url: str = ARK_BASE_URL,
+    timeout_sec: int = 60,
+) -> str:
+    """调用 Ark 的 chat/completions（OpenAI 兼容格式），给"AI优化提示词"这种纯文本
+    任务用——跟 images/generations、contents/generations/tasks 是同一个 base_url
+    下的另一个端点，账号类型(/api/v3/ 还是 /api/plan/v3/)一致，不需要单独配置。
+    这里不重试/不降级：优化提示词是一次性、用户主动点按钮触发的操作，失败了让用户
+    自己决定要不要再点一次，不像图片/视频生成那样值得自动重试。
+    """
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    body = {"model": model, "messages": messages}
+
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers=_headers(api_key),
+        json=body,
+        timeout=timeout_sec,
+    )
+    if resp.status_code != 200:
+        _raise_ark_error("Ark 文本生成", resp)
+
+    data = resp.json()
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ArkError(f"Ark 文本生成返回结构不符合预期: {data}") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise ArkError(f"Ark 文本生成返回了空内容: {data}")
+    return content.strip()
+
+
 def create_video_task(
     *,
     api_key: str,
