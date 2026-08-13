@@ -443,14 +443,15 @@ const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
 // 设置页原来是一长条竖着滚下去的表单，改成选项卡分区看着更清楚：
-// 常规(模型服务) / AI生成剧本(本机 Claude 或第三方 API) / 生成与导出(目录+导出+海报字体) /
+// 火山方舟模型配置 / AI生成剧本配置 / IndexTTS 配音配置 / 生成与导出(目录+导出+海报字体) /
 // 提示词与模板(4个自定义提示词分组) / 关于(版本更新)。"保存全部设置"按钮不分tab，
 // 固定在页面底部，切哪个tab都能一次性保存所有字段(后端本来就是整份 PUT)。
-type SettingsTab = 'general' | 'story' | 'generation' | 'prompts' | 'about'
+type SettingsTab = 'general' | 'story' | 'indextts' | 'generation' | 'prompts' | 'about'
 const settingsTab = ref<SettingsTab>('general')
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: 'general', label: '常规' },
-  { id: 'story', label: 'AI生成剧本' },
+  { id: 'general', label: '火山方舟模型配置' },
+  { id: 'story', label: 'AI生成剧本配置' },
+  { id: 'indextts', label: 'IndexTTS 配音配置' },
   { id: 'generation', label: '生成与导出' },
   { id: 'prompts', label: '提示词与模板' },
   { id: 'about', label: '关于' }
@@ -1864,6 +1865,19 @@ function projectStatusColorClass(status: string): string {
   }
 }
 
+function projectStatusLabel(status: string): string {
+  switch (status) {
+    case 'active':
+      return '进行中'
+    case 'archived':
+      return '已归档'
+    case 'draft':
+      return '草稿'
+    default:
+      return status
+  }
+}
+
 // ---- 场次/镜头拖拽排序 ----
 // 用原生 HTML5 拖放，不引入额外的拖拽库：卡片数量不大（一部漫剧几十场/几百镜封顶），
 // 原生 drag events 足够用，也省得为了这一个功能多引入一个依赖。
@@ -2428,7 +2442,7 @@ function statusLabel(status: string): string {
     <section v-if="view === 'settings'" class="panel settings-page">
       <button v-if="activeProject" class="back" @click="view = 'project'">← 返回「{{ activeProject.title }}」</button>
       <div class="settings-page-head">
-        <div><h1>设置</h1><p class="hint">模型服务、AI生成剧本、生成与导出偏好、自定义提示词</p></div>
+        <div><h1>设置</h1><p class="hint">火山方舟模型、AI生成剧本、IndexTTS 配音、生成与导出偏好、自定义提示词</p></div>
         <span class="settings-state" :class="settingsInfo.arkApiKeySet ? 'ready' : 'missing'">
           {{ settingsInfo.arkApiKeySet ? 'API 已配置' : 'API 未配置' }}
         </span>
@@ -2475,7 +2489,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'general'">
       <section class="settings-group settings-group-primary">
-      <div class="settings-group-head"><div><h2>模型服务</h2><p>生成图片、视频和配音所使用的服务</p></div><span>必填</span></div>
+      <div class="settings-group-head"><div><h2>火山方舟模型配置</h2><p>生成图片和视频所使用的 Seedream / Seedance 服务</p></div><span>必填</span></div>
       <div class="field">
         <label>火山方舟 API Key <span class="field-badge">Seedream / Seedance</span></label>
         <input
@@ -2515,9 +2529,16 @@ function statusLabel(status: string): string {
           最准确的名单以控制台「模型广场」里实际展示的为准，这里列的只是写这段代码时查到的参考。
         </p></details>
       </div>
+      </section>
+      </template>
+
+      <template v-if="settingsTab === 'indextts'">
+      <section class="settings-group settings-group-primary">
+      <div class="settings-group-head"><div><h2>IndexTTS 配音配置</h2><p>局域网配音服务地址，用于分镜配音和成片旁白</p></div><span>可选</span></div>
       <div class="field">
         <label>IndexTTS 服务地址 <span class="field-badge">局域网配音</span></label>
         <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://localhost:7860" />
+        <p class="field-help">填写能从本机访问的 IndexTTS Web 服务地址；不配置时不会影响图片、视频和剧本生成。</p>
       </div>
       </section>
       </template>
@@ -2525,7 +2546,7 @@ function statusLabel(status: string): string {
       <template v-if="settingsTab === 'story'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head">
-        <div><h2>AI生成剧本</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
+        <div><h2>AI生成剧本配置</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
         <span>必填其一</span>
       </div>
       <div class="field story-gen-provider-field">
@@ -2850,18 +2871,20 @@ function statusLabel(status: string): string {
               @blur="saveProjectTitle(p)"
             />
             <strong v-else class="project-title-text">{{ p.title }}</strong>
-            <button
-              v-if="editingProjectId !== p.id"
-              class="ghost project-title-edit"
-              title="改标题"
-              @click.stop="startEditProjectTitle(p)"
-            >改标题</button>
-            <span class="tag" :class="projectStatusColorClass(p.status)">{{ p.status }}</span>
+            <span class="tag" :class="projectStatusColorClass(p.status)">{{ projectStatusLabel(p.status) }}</span>
             <span class="tag tag-content-type">{{ contentTypeLabels[p.contentType] }}</span>
             <span class="tag tag-style-mode">{{ styleModeLabels[p.styleMode] }}</span>
             <span class="tag tag-style-mode">{{ ratioLabel(p.aspectRatio) }}</span>
             <span v-if="p.lastExportedAt" class="tag tag-exported">已导出</span>
-            <button class="ghost danger project-delete" @click.stop="deleteProject(p.id)">删除</button>
+            <div class="project-actions" @click.stop>
+              <button
+                v-if="editingProjectId !== p.id"
+                class="ghost project-title-edit"
+                title="改标题"
+                @click.stop="startEditProjectTitle(p)"
+              >改标题</button>
+              <button class="ghost danger project-delete" @click.stop="deleteProject(p.id)">删除</button>
+            </div>
           </li>
         </ul>
       </template>
@@ -3337,7 +3360,7 @@ function statusLabel(status: string): string {
       <div class="project-overview">
         <div class="project-title-row">
           <h2 :title="activeProject.title">{{ activeProject.title }}</h2>
-          <span class="tag" :class="projectStatusColorClass(activeProject.status)">{{ activeProject.status }}</span>
+          <span class="tag" :class="projectStatusColorClass(activeProject.status)">{{ projectStatusLabel(activeProject.status) }}</span>
           <span v-if="activeProject.lastExportedAt" class="tag tag-exported">已导出</span>
         </div>
         <!-- 出图风格全程都在生效：角色设定图/场景参考图/每一镜画面，每次生成时都会现读
@@ -4492,6 +4515,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .project-title-edit { flex-shrink: 0; }
 .project-delete { margin-left: auto; flex-shrink: 0; }
+.project-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+.project-actions .project-delete { margin-left: 0; }
 
 .back { background: none; color: #18181b; border: none; padding: 0; margin-bottom: 12px; }
 .warning-box {
@@ -5011,11 +5036,20 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .projects-page-head h1 { margin: 0 0 2px; font-size: 20px; line-height: 1.2; }
 .ui-v2 .projects-page-head p { margin: 0; }
+.ui-v2 .projects-page-head h1,
+.ui-v2 .settings-page-head h1,
+.ui-v2 .manual-page-head h1 {
+  color: #0f766e;
+}
 .ui-v2 .project-create-panel {
   padding: 16px; margin-bottom: 22px; border: 1px solid #e4e4e7; border-radius: 12px; background: #fbfbfd;
 }
 .ui-v2 .project-create-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .ui-v2 .project-create-panel h2 { margin: 0; font-size: 16px; }
+.ui-v2 .project-create-head h2,
+.ui-v2 .project-list-head h2 {
+  color: #2563eb;
+}
 .ui-v2 .project-create-head p { margin: 3px 0 0; }
 .ui-v2 .project-create-head > span { padding: 3px 8px; border-radius: 999px; background: #ececf0; color: #71717a; font-size: 10px; font-weight: 700; }
 .ui-v2 .project-create-panel > .hint { display: block; margin: 10px 0 0; line-height: 1.55; }
@@ -5031,7 +5065,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .project-create-step-title { display: flex; align-items: center; gap: 9px; width: 100%; margin-top: 2px; }
 .ui-v2 .project-create-step-title > span {
   display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px;
-  border-radius: 999px; background: #18181b; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
+  border-radius: 999px; background: #2563eb; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
 }
 .ui-v2 .project-create-step-title > div { display: flex; align-items: baseline; gap: 8px; }
 .ui-v2 .project-create-step-title strong { font-size: 13px; }
@@ -5069,10 +5103,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   overflow: hidden; border: 1px solid #e4e4e7; border-radius: 12px; background: white;
 }
 .ui-v2 .project-list li {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto; gap: 7px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto auto; gap: 7px;
   min-height: 52px; margin: 0; padding: 10px 13px; border: 0; border-bottom: 1px solid #e4e4e7; border-radius: 0;
 }
 .ui-v2 .project-delete { margin-left: 0; }
+.ui-v2 .project-actions { margin-left: 0; }
 .ui-v2 .project-list li:last-child { border-bottom: 0; }
 .ui-v2 .project-list li strong {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px;
@@ -5087,10 +5122,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .poster-step-head { display: flex; align-items: center; gap: 10px; padding-bottom: 13px; margin-bottom: 15px; border-bottom: 1px solid #e4e4e7; }
 .ui-v2 .poster-step-head > span, .ui-v2 .poster-step-number {
   display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
-  border-radius: 999px; background: #18181b; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
+  border-radius: 999px; background: #ea580c; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
 }
 .ui-v2 .poster-step-head > div, .ui-v2 .poster-visual-settings summary > div { display: flex; align-items: baseline; gap: 8px; }
 .ui-v2 .poster-step-head strong, .ui-v2 .poster-visual-settings summary strong { font-size: 14px; }
+.ui-v2 .poster-step-head strong,
+.ui-v2 .poster-visual-settings summary strong,
+.ui-v2 .poster-preview-head strong,
+.ui-v2 .poster-create-actions > div > strong {
+  color: #c2410c;
+}
 .ui-v2 .poster-step-head small, .ui-v2 .poster-visual-settings summary small { color: #8a8a90; font-size: 11px; }
 .ui-v2 .poster-form-section .field { margin-bottom: 16px; gap: 7px; }
 .ui-v2 .poster-form-section .field:last-child { margin-bottom: 0; }
@@ -5163,6 +5204,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .story-command-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ui-v2 .story-command-summary > div { display: flex; align-items: baseline; gap: 10px; }
 .ui-v2 .story-command-label { font-size: 16px; font-weight: 750; }
+.ui-v2 .story-command-label,
+.ui-v2 .story-table-scene-label,
+.ui-v2 .character-box > h2,
+.ui-v2 .export-box > h2 {
+  color: #2563eb;
+}
 .ui-v2 .story-command-summary strong { font-size: 12px; color: #6b7280; font-weight: 500; }
 .ui-v2 .story-status { font-size: 11px; font-weight: 700; }
 .ui-v2 .story-command-actions { display: flex; gap: 8px; margin-top: 14px; }
@@ -5212,6 +5259,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .settings-group-update { grid-column: 1 / -1; background: white; }
 .ui-v2 .settings-group-head { margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #e4e4e7; }
 .ui-v2 .settings-group-head h2 { font-size: 16px; }
+.ui-v2 .settings-group-head h2 { color: #7c3aed; }
 .ui-v2 .settings-group-head p { color: #8a8a90; font-size: 12px; }
 .ui-v2 .settings-group-head > span {
   padding: 3px 7px; border-radius: 999px; background: #f0f0f2; color: #71717a; font-size: 10px; font-weight: 700;
@@ -5440,6 +5488,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .shot-media-pane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .ui-v2 .shot-media-pane-head strong { font-size: 15px; }
+.ui-v2 .shot-media-pane-head strong { color: #0f766e; }
 .ui-v2 .shot-media-card {
   padding: 13px; border: 1px solid #e4e4e7; border-radius: 10px; background: white;
 }
@@ -5463,6 +5512,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .consistency-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .ui-v2 .consistency-panel-head > div { display: flex; align-items: baseline; gap: 9px; }
 .ui-v2 .consistency-panel-head strong { font-size: 15px; }
+.ui-v2 .consistency-panel-head strong { color: #1d4ed8; }
 .ui-v2 .consistency-panel-head div span { font-size: 12px; color: #6b7280; }
 .shot-move-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .ui-v2 .consistency-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

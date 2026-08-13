@@ -1,8 +1,9 @@
-import { ChildProcess, spawn } from 'child_process'
+import { ChildProcess, spawn, spawnSync } from 'child_process'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { delimiter, extname, join } from 'path'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'fs'
+import { homedir } from 'os'
+import { delimiter, dirname, extname, join } from 'path'
 
 // package.json 的 name 是带 scope 的 "@ai-manju/desktop"——Electron 默认拿它来算
 // app.getPath('userData') 之类的路径，斜杠在文件名里不安全，行为也因平台而异。
@@ -198,7 +199,15 @@ function resolveAiServiceDir(): string {
 function resolvePythonBin(aiServiceDir: string): string {
   const isWindows = process.platform === 'win32'
   const venvPython = join(aiServiceDir, '.venv', isWindows ? 'Scripts/python.exe' : 'bin/python')
-  return existsSync(venvPython) ? venvPython : 'python3'
+  if (existsSync(venvPython)) return venvPython
+
+  if (process.platform === 'darwin') {
+    for (const candidate of ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3']) {
+      if (existsSync(candidate)) return candidate
+    }
+  }
+
+  return 'python3'
 }
 
 interface AiServiceRuntime {
@@ -244,6 +253,84 @@ function withWindowsCliPath(env: Record<string, string>): Record<string, string>
   }
 }
 
+function withMacCliPath(env: Record<string, string>): Record<string, string> {
+  if (process.platform !== 'darwin') return env
+
+  const home = homedir()
+  const nvmNodeDir = join(home, '.nvm', 'versions', 'node')
+  const nvmBinDirs = existsSync(nvmNodeDir)
+    ? readdirSync(nvmNodeDir).sort().reverse().map((version) => join(nvmNodeDir, version, 'bin'))
+    : []
+  const candidateDirs = [
+    ...nvmBinDirs,
+    join(home, '.asdf', 'shims'),
+    join(home, '.npm-global', 'bin'),
+    join(home, '.local', 'bin'),
+    join(home, '.volta', 'bin'),
+    join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin'
+  ]
+
+  return {
+    ...env,
+    PATH: [...candidateDirs, process.env.PATH ?? ''].join(delimiter)
+  }
+}
+
+function withCliPath(env: Record<string, string>): Record<string, string> {
+  return withMacCliPath(withWindowsCliPath(env))
+}
+
+function runPythonEnvCommand(command: string, args: string[], cwd: string): void {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...withCliPath({}) },
+    timeout: 180000
+  })
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} 失败：${result.stderr || result.stdout || result.error?.message || `exit ${result.status}`}`)
+  }
+}
+
+function macPythonEnvReady(pythonBin: string, aiServiceDir: string): boolean {
+  if (!existsSync(pythonBin)) return false
+  const result = spawnSync(
+    pythonBin,
+    ['-c', 'import fastapi, uvicorn, pydantic, requests, gradio_client; from PIL import Image'],
+    { cwd: aiServiceDir, encoding: 'utf8', env: { ...process.env, ...withCliPath({}) }, timeout: 30000 }
+  )
+  if (result.status !== 0) {
+    console.error(`[ai-service] macOS Python 依赖检查失败: ${result.stderr || result.stdout}`)
+  }
+  return result.status === 0
+}
+
+function ensurePackagedMacPythonEnv(aiServiceDir: string): string {
+  const venvDir = join(app.getPath('userData'), 'python-mac')
+  const pythonBin = join(venvDir, 'bin', 'python')
+  if (macPythonEnvReady(pythonBin, aiServiceDir)) return pythonBin
+
+  const basePython = resolvePythonBin(aiServiceDir)
+  const requirementsPath = join(aiServiceDir, 'requirements.txt')
+  mkdirSync(dirname(venvDir), { recursive: true })
+
+  console.log(`[ai-service] 准备 macOS Python 环境: ${venvDir}`)
+  runPythonEnvCommand(basePython, ['-m', 'venv', venvDir], aiServiceDir)
+  runPythonEnvCommand(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], aiServiceDir)
+  runPythonEnvCommand(pythonBin, ['-m', 'pip', 'install', '-r', requirementsPath], aiServiceDir)
+
+  if (!macPythonEnvReady(pythonBin, aiServiceDir)) {
+    throw new Error('macOS Python 环境安装完成后仍缺少 ai-service 依赖')
+  }
+  return pythonBin
+}
+
 function resolveAiServiceRuntime(): AiServiceRuntime {
   // 打包模式：ai-service 源码和种子数据库都来自安装包内的 resources，用户数据放到
   // app.getPath('userData')，避免写安装目录。Windows 额外内置了 python-win；macOS
@@ -253,7 +340,9 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
     const pythonRuntimeDir = join(process.resourcesPath, 'python-win')
     const pythonBin = process.platform === 'win32'
       ? join(pythonRuntimeDir, 'python.exe')
-      : resolvePythonBin(aiServiceDir)
+      : process.platform === 'darwin'
+        ? ensurePackagedMacPythonEnv(aiServiceDir)
+        : resolvePythonBin(aiServiceDir)
     const dbPath = join(app.getPath('userData'), 'app.db')
     const outputRoot = join(app.getPath('userData'), 'output')
     const extraEnv: Record<string, string> = {
@@ -272,7 +361,7 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
     }
 
     ensureUserDataDb(dbPath)
-    return { pythonBin, aiServiceDir, extraEnv: withWindowsCliPath(extraEnv) }
+    return { pythonBin, aiServiceDir, extraEnv: withCliPath(extraEnv) }
   }
 
   // 开发模式：走原来的仓库相对路径 + venv，行为完全不变。
@@ -288,7 +377,14 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
  * - 子进程输出转发到 electron 的 stdout，方便看后端日志/报错
  */
 function startAiService(): void {
-  const { pythonBin, aiServiceDir, extraEnv } = resolveAiServiceRuntime()
+  let runtime: AiServiceRuntime
+  try {
+    runtime = resolveAiServiceRuntime()
+  } catch (err) {
+    console.error('[ai-service] 准备运行环境失败:', err)
+    return
+  }
+  const { pythonBin, aiServiceDir, extraEnv } = runtime
   if (!existsSync(aiServiceDir)) {
     console.error(`[ai-service] 找不到目录: ${aiServiceDir}，跳过启动后端`)
     return
@@ -451,8 +547,9 @@ ipcMain.handle('app-update-open-release', async () => {
 
 app.whenReady().then(() => {
   setupAutoUpdater()
-  startAiService()
   const win = createWindow()
+  // macOS 首次启动打包版时可能需要创建 Python 虚拟环境，先显示窗口再准备后端，避免白屏等待。
+  setTimeout(startAiService, 200)
   win.webContents.once('did-finish-load', scheduleStartupUpdateCheck)
 
   app.on('activate', () => {
