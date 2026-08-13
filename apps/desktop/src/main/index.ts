@@ -233,13 +233,29 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
   // 暂时使用用户机器上的 python3，因此需要先安装 requirements.txt 里的 Python 依赖。
   if (app.isPackaged) {
     const aiServiceDir = join(process.resourcesPath, 'ai-service')
+    const pythonRuntimeDir = join(process.resourcesPath, 'python-win')
     const pythonBin = process.platform === 'win32'
-      ? join(process.resourcesPath, 'python-win', 'python.exe')
+      ? join(pythonRuntimeDir, 'python.exe')
       : resolvePythonBin(aiServiceDir)
     const dbPath = join(app.getPath('userData'), 'app.db')
     const outputRoot = join(app.getPath('userData'), 'output')
+    const extraEnv: Record<string, string> = {
+      AI_MANJU_DB_PATH: dbPath,
+      AI_MANJU_OUTPUT_ROOT: outputRoot
+    }
+
+    if (process.platform === 'win32') {
+      const caBundlePath = join(pythonRuntimeDir, 'Lib', 'site-packages', 'certifi', 'cacert.pem')
+      if (existsSync(caBundlePath)) {
+        extraEnv.SSL_CERT_FILE = caBundlePath
+        extraEnv.REQUESTS_CA_BUNDLE = caBundlePath
+      } else {
+        console.error(`[ai-service] 找不到 TLS CA 证书: ${caBundlePath}`)
+      }
+    }
+
     ensureUserDataDb(dbPath)
-    return { pythonBin, aiServiceDir, extraEnv: { AI_MANJU_DB_PATH: dbPath, AI_MANJU_OUTPUT_ROOT: outputRoot } }
+    return { pythonBin, aiServiceDir, extraEnv }
   }
 
   // 开发模式：走原来的仓库相对路径 + venv，行为完全不变。
