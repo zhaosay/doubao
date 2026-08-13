@@ -9,6 +9,7 @@ from app.providers.seedream import SeedreamImageProvider
 from app.routers import (
     characters,
     export,
+    media_ratios,
     poster_templates,
     posters,
     projects,
@@ -49,6 +50,7 @@ app.include_router(posters.router)
 app.include_router(poster_templates.router)
 app.include_router(video_generations.router)
 app.include_router(text_images.router)
+app.include_router(media_ratios.router)
 
 DEFAULT_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 

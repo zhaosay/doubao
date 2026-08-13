@@ -18,7 +18,7 @@ from app.services.paths import to_static_url
 router = APIRouter(prefix="/text-images", tags=["text-images"])
 
 StyleMode = Literal["comic", "realistic", "render3d", "freeform"]
-Orientation = Literal["portrait", "landscape"]
+Orientation = Literal["portrait", "landscape", "9:16", "1:1", "4:3"]
 
 
 def _split_paths(raw: Optional[str]) -> list[str]:

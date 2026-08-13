@@ -16,12 +16,18 @@ StyleMode = Literal["comic", "realistic", "render3d", "freeform"]
 # character: 人物剧情，剧本正常按角色驱动来写；no_character: 无固定角色，风光/氛围/产品向
 # 内容，写剧本时不强行编人物出来凑数，角色库步骤相应弱化(见 characters 路由/前端)。
 ContentType = Literal["character", "no_character"]
+# 生成比例：这部剧所有分镜图片/视频统一用这个比例出图/出视频，跟 styleMode 同一个
+# 项目级设置(见 seedream.py 的 _aspect_ratio_for_shot)。取值词典见
+# seedream.py 的 IMAGE_RATIOS——portrait/landscape 是海报/文生图沿用的老 key(3:4/16:9)，
+# 9:16/1:1/4:3 是新加的。
+AspectRatio = Literal["portrait", "landscape", "9:16", "1:1", "4:3"]
 
 
 class CreateProjectBody(BaseModel):
     premise: str
     styleMode: StyleMode = "comic"
     contentType: ContentType = "character"
+    aspectRatio: AspectRatio = "9:16"
 
 
 class UpdateProjectBody(BaseModel):
@@ -29,6 +35,7 @@ class UpdateProjectBody(BaseModel):
     premise: Optional[str] = None
     styleMode: Optional[StyleMode] = None
     contentType: Optional[ContentType] = None
+    aspectRatio: Optional[AspectRatio] = None
 
 
 class ImportShotBody(BaseModel):
@@ -73,9 +80,9 @@ def create_project(body: CreateProjectBody):
 
     with get_connection() as conn:
         conn.execute(
-            'INSERT INTO "Project" (id, title, premise, status, styleMode, contentType, createdAt) '
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (project_id, title, premise, "draft", body.styleMode, body.contentType, _now()),
+            'INSERT INTO "Project" (id, title, premise, status, styleMode, contentType, aspectRatio, createdAt) '
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, title, premise, "draft", body.styleMode, body.contentType, body.aspectRatio, _now()),
         )
         conn.execute(
             'INSERT INTO "Story" (id, projectId, content, status) VALUES (?, ?, ?, ?)',
@@ -89,6 +96,7 @@ def create_project(body: CreateProjectBody):
         "status": "draft",
         "styleMode": body.styleMode,
         "contentType": body.contentType,
+        "aspectRatio": body.aspectRatio,
     }
 
 
@@ -96,7 +104,7 @@ def create_project(body: CreateProjectBody):
 def list_projects():
     with get_connection() as conn:
         rows = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, createdAt, lastExportedAt '
+            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
             'FROM "Project" ORDER BY createdAt DESC'
         ).fetchall()
     return [dict(r) for r in rows]
@@ -118,7 +126,7 @@ def update_project(project_id: str, body: UpdateProjectBody):
         set_clause = ", ".join(f'"{k}" = ?' for k in fields)
         conn.execute(f'UPDATE "Project" SET {set_clause} WHERE id = ?', (*fields.values(), project_id))
         row = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, createdAt, lastExportedAt '
+            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
             'FROM "Project" WHERE id = ?',
             (project_id,),
         ).fetchone()
@@ -129,7 +137,7 @@ def update_project(project_id: str, body: UpdateProjectBody):
 def get_project(project_id: str):
     with get_connection() as conn:
         project = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, createdAt, lastExportedAt '
+            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
             'FROM "Project" WHERE id = ?',
             (project_id,),
         ).fetchone()

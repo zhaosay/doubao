@@ -220,6 +220,8 @@ interface ProjectSummary {
   status: string
   styleMode: StyleMode
   contentType: ContentType
+  // 生成比例：这部剧所有分镜图片/视频统一用这个比例，见 seedream.py 的 IMAGE_RATIOS。
+  aspectRatio: string
   createdAt: string
   // 最近一次导出成片成功的时间，null = 还没导出过，项目列表靠它显示"已导出"标签。
   lastExportedAt: string | null
@@ -280,7 +282,7 @@ interface PosterTemplateItem {
 interface PosterItem {
   id: string
   projectId: string | null
-  orientation: 'portrait' | 'landscape'
+  orientation: string
   orientationLabel: string
   templateId: string | null
   templateLabel: string | null
@@ -308,6 +310,8 @@ interface VideoGenerationItem {
   projectId: string | null
   referenceImagePath: string
   prompt: string
+  ratio: string
+  ratioLabel: string
   filePath: string | null
   url: string | null
   status: 'pending' | 'running' | 'completed' | 'failed'
@@ -321,7 +325,7 @@ interface TextImageItem {
   id: string
   projectId: string | null
   prompt: string
-  orientation: 'portrait' | 'landscape'
+  orientation: string
   orientationLabel: string
   styleMode: StyleMode
   referenceImagePaths: string | null
@@ -580,6 +584,10 @@ const newPremise = ref('')
 // "创建"按钮就不会亮，逼着过一遍这两个选择，而不是无意识用掉默认值。
 const newContentType = ref<ContentType | null>('character')
 const newStyleMode = ref<StyleMode | null>('comic')
+// 生成比例是独立于"内容类型+风格"模板系统之外的第三个轴——不管选哪个模板，
+// 比例都单独选，默认 9:16(手机短视频最常见的比例)，不强制像 contentType/styleMode
+// 那样清空默认值逼用户选一次。
+const newAspectRatio = ref<string>('9:16')
 const creatingProject = ref(false)
 
 // 项目模板：把"内容类型 + 风格"这两个抽象的轴，包成几个用户实际会用到的具体场景，
@@ -663,7 +671,7 @@ let posterOrientationsLoaded = false
 const posterTemplates = ref<PosterTemplateItem[]>([])
 const postersTab = ref<'list' | 'create'>('list')
 const posterForm = reactive({
-  orientation: 'portrait' as 'portrait' | 'landscape',
+  orientation: 'portrait' as string,
   // 空字符串 = 不选模版，走"自定义"分支，下面 promptText/layoutMode 才生效。
   templateId: '',
   promptText: '',
@@ -711,13 +719,18 @@ function bodyLinesFromText(text: string): string[] {
 // 一段描述，直接调 Seedance 出一条视频；不做配音/字幕/多段拼接，最快最简单的路径。
 const videoGenList = ref<VideoGenerationItem[]>([])
 const videoGenTab = ref<'list' | 'create'>('list')
-const videoGenForm = reactive({ prompt: '' })
+const videoGenForm = reactive({ prompt: '', ratio: '9:16' as string })
 // 复用 pickReferenceFile(record, key, multiple)，key 固定叫 'new'，
 // 跟 posterRefPathInput 同一个模式；multiple=false 因为图生视频只需要一张起始帧参考图。
 const videoGenRefPathInput = reactive<Record<string, string>>({ new: '' })
 const creatingVideoGen = ref(false)
 const videoGenError = ref<string | null>(null)
 const regeneratingVideoGen = reactive<Record<string, boolean>>({})
+// 生成比例：图生视频(每次单独选)和新建短剧(项目级设置)共用同一份比例词典，
+// 走共享的 GET /media-ratios(跟海报/文生图各自的 /options 是同一份底层配置，
+// 见 app/providers/seedream.py 的 IMAGE_RATIOS)。
+const mediaRatios = ref<PosterOrientationOption[]>([])
+let mediaRatiosLoaded = false
 
 // ---- 文生图（独立文生图，不挂在任何项目下）----
 const textImages = ref<TextImageItem[]>([])
@@ -727,7 +740,7 @@ const textImagesTab = ref<'list' | 'create'>('list')
 const textImageForm = reactive({
   prompt: '',
   styleMode: 'comic' as StyleMode,
-  orientation: 'portrait' as 'portrait' | 'landscape'
+  orientation: 'portrait' as string
 })
 // 角色参考图(character)和环境参考图(scene)分开管理——用户上传时清楚这张图是给
 // "人物长相"参考还是"场景/环境"参考，两份各自支持多选+预览，生成时后端会合并
@@ -744,10 +757,16 @@ const textImageOrientationLabel = computed(() => {
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBaseUrl}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options
-  })
+  let res: Response
+  try {
+    res = await fetch(`${apiBaseUrl}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`无法连接本地后端服务（${detail}）。如果页面左下角显示“后端 error”，说明 ai-service 没有启动成功；macOS 打包版通常是缺少 Python 依赖，请安装新版后重试。`)
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     let message = text
@@ -923,13 +942,15 @@ async function createProject(): Promise<void> {
       body: JSON.stringify({
         premise: newPremise.value.trim(),
         styleMode: newStyleMode.value,
-        contentType: newContentType.value
+        contentType: newContentType.value,
+        aspectRatio: newAspectRatio.value
       })
     })
     newPremise.value = ''
     newTemplate.value = 'ai_comic'
     newContentType.value = 'character'
     newStyleMode.value = 'comic'
+    newAspectRatio.value = '9:16'
     await loadProjects()
     projectsTab.value = 'list'
   } finally {
@@ -980,6 +1001,12 @@ const contentTypeLabels: Record<ContentType, string> = {
   no_character: '无固定角色'
 }
 
+// 生成比例的 label 是动态从 /media-ratios 拉的(不是写死的 Record)，项目列表/详情页
+// 复用同一份 mediaRatios 数据做 id -> label 查找，找不到就退化成显示原始 id。
+function ratioLabel(id: string): string {
+  return mediaRatios.value.find((r) => r.id === id)?.label ?? id
+}
+
 async function updateProjectStyleMode(mode: StyleMode): Promise<void> {
   if (!activeProject.value) return
   const updated = await api<{ styleMode: StyleMode }>(`/projects/${activeProject.value.id}`, {
@@ -996,6 +1023,15 @@ async function updateProjectContentType(type: ContentType): Promise<void> {
     body: JSON.stringify({ contentType: type })
   })
   activeProject.value.contentType = updated.contentType
+}
+
+async function updateProjectAspectRatio(ratio: string): Promise<void> {
+  if (!activeProject.value) return
+  const updated = await api<{ aspectRatio: string }>(`/projects/${activeProject.value.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ aspectRatio: ratio })
+  })
+  activeProject.value.aspectRatio = updated.aspectRatio
 }
 
 // ---- 项目详情 ----
@@ -1050,6 +1086,18 @@ async function loadPosterOrientations(): Promise<void> {
     posterOrientationsLoaded = true
   } catch {
     // 静默失败：创建海报表单里的朝向选择器会是空的，用户能看出来，不用额外弹错误。
+  }
+}
+
+// 生成比例词典同样固定不变，只拉一次；图生视频表单和新建短剧表单共用这一份。
+async function loadMediaRatios(): Promise<void> {
+  if (mediaRatiosLoaded) return
+  try {
+    const data = await api<{ ratios: PosterOrientationOption[] }>('/media-ratios')
+    mediaRatios.value = data.ratios
+    mediaRatiosLoaded = true
+  } catch {
+    // 静默失败：图生视频/新建短剧表单里的比例选择器会是空的，用户能看出来，不用额外弹错误。
   }
 }
 
@@ -1206,7 +1254,8 @@ async function createVideoGeneration(): Promise<void> {
       method: 'POST',
       body: JSON.stringify({
         referenceImagePath: videoGenRefPathInput.new.trim(),
-        prompt: videoGenForm.prompt.trim()
+        prompt: videoGenForm.prompt.trim(),
+        ratio: videoGenForm.ratio
       })
     })
     videoGenForm.prompt = ''
@@ -2251,7 +2300,8 @@ async function waitForBackendThenLoad(): Promise<void> {
     loadPosterTemplates().catch(() => {}),
     loadVideoGenerations().catch(() => {}),
     loadTextImages().catch(() => {}),
-    loadTextImageOrientations().catch(() => {})
+    loadTextImageOrientations().catch(() => {}),
+    loadMediaRatios().catch(() => {})
   ])
 }
 
@@ -2757,6 +2807,14 @@ function statusLabel(status: string): string {
               <label><input type="radio" value="freeform" v-model="newStyleMode" /> AI自由发挥</label>
             </div>
             </div>
+            <!-- 生成比例是独立于模板之外的第三个轴，不管选哪个模板都单独选，
+                 这部剧所有分镜图片/视频都会用这个比例(见 Project.aspectRatio)。 -->
+            <div class="style-mode-picker">
+              <span class="style-mode-label">生成比例</span>
+              <label v-for="r in mediaRatios" :key="r.id">
+                <input type="radio" :value="r.id" v-model="newAspectRatio" /> {{ r.label }}
+              </label>
+            </div>
           </div>
           <div class="project-create-step-title"><span>2</span><div><strong>填写项目内容</strong><small>用一句话说明想要生成的故事或视频</small></div></div>
           <div class="project-create-input-row">
@@ -2801,6 +2859,7 @@ function statusLabel(status: string): string {
             <span class="tag" :class="projectStatusColorClass(p.status)">{{ p.status }}</span>
             <span class="tag tag-content-type">{{ contentTypeLabels[p.contentType] }}</span>
             <span class="tag tag-style-mode">{{ styleModeLabels[p.styleMode] }}</span>
+            <span class="tag tag-style-mode">{{ ratioLabel(p.aspectRatio) }}</span>
             <span v-if="p.lastExportedAt" class="tag tag-exported">已导出</span>
             <button class="ghost danger project-delete" @click.stop="deleteProject(p.id)">删除</button>
           </li>
@@ -3064,8 +3123,19 @@ function statusLabel(status: string): string {
           </div>
         </section>
 
+        <section class="poster-form-section">
+          <div class="poster-step-head"><span>3</span><div><strong>生成比例</strong><small>决定这条视频的画幅</small></div></div>
+          <div class="field">
+            <div class="style-mode-picker text-image-choice-row">
+              <label v-for="r in mediaRatios" :key="r.id">
+                <input type="radio" :value="r.id" v-model="videoGenForm.ratio" /> {{ r.label }}
+              </label>
+            </div>
+          </div>
+        </section>
+
         <div class="poster-create-actions">
-          <div><strong>准备生成</strong><span>固定 9:16 / 4秒 / 720p，跟分镜生成视频同一套参数</span><p v-if="videoGenError" class="error">{{ videoGenError }}</p></div>
+          <div><strong>准备生成</strong><span>4秒 / 720p，跟分镜生成视频同一套时长/分辨率参数</span><p v-if="videoGenError" class="error">{{ videoGenError }}</p></div>
           <button
             :disabled="creatingVideoGen || !videoGenForm.prompt.trim() || !videoGenRefPathInput.new.trim()"
             @click="createVideoGeneration"
@@ -3086,6 +3156,7 @@ function statusLabel(status: string): string {
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
+                <span class="tag tag-style-mode">{{ item.ratioLabel }}</span>
               </div>
               <p class="hint">{{ item.prompt }}</p>
               <p v-if="item.error" class="error">{{ item.error }}</p>
@@ -3283,6 +3354,21 @@ function statusLabel(status: string): string {
           <label><input type="radio" value="render3d" :checked="activeProject.styleMode === 'render3d'" @change="updateProjectStyleMode('render3d')" /> 3D风</label>
           <label><input type="radio" value="freeform" :checked="activeProject.styleMode === 'freeform'" @change="updateProjectStyleMode('freeform')" /> AI自由发挥</label>
           <span class="hint style-mode-note">每次生成图片/视频时都会现读这个设置，随时切换随时生效</span>
+        </div>
+        <!-- 生成比例：跟出图风格同一个模式，项目级常驻设置，每次生图/生视频都现读；
+             但已经生成过的分镜图片/视频不会跟着重新生成，换比例前生成的素材还是老比例，
+             混进同一部剧拼接导出时画幅会不一致，建议尽早定好比例再批量生成分镜。 -->
+        <div class="style-mode-picker style-mode-picker-inline">
+          <span class="style-mode-label">生成比例</span>
+          <label v-for="r in mediaRatios" :key="r.id">
+            <input
+              type="radio"
+              :value="r.id"
+              :checked="activeProject.aspectRatio === r.id"
+              @change="updateProjectAspectRatio(r.id)"
+            /> {{ r.label }}
+          </label>
+          <span class="hint style-mode-note">这部剧所有分镜图片/视频统一用这个比例，方便导出时拼到一起</span>
         </div>
       </div>
 

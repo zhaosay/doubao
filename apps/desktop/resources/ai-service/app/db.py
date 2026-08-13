@@ -122,6 +122,12 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         # 看不出哪些项目已经出过成片，哪些还没有。
         conn.execute('ALTER TABLE "Project" ADD COLUMN "lastExportedAt" TEXT')
         conn.commit()
+    if "aspectRatio" not in project_cols:
+        # 生成比例：这部剧所有分镜图片/视频统一用这个比例(见 seedream.py 的
+        # _aspect_ratio_for_shot)。默认 9:16 是加这一列之前分镜出图/出视频硬编码用的
+        # 比例，老项目自愈迁移出这一列后生成行为完全不变。
+        conn.execute('ALTER TABLE "Project" ADD COLUMN "aspectRatio" TEXT NOT NULL DEFAULT \'9:16\'')
+        conn.commit()
     character_cols = {r[1] for r in conn.execute('PRAGMA table_info("Character")').fetchall()}
     if "prompt" not in character_cols:
         conn.execute('ALTER TABLE "Character" ADD COLUMN "prompt" TEXT')
@@ -415,6 +421,7 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
                 "projectId" TEXT,
                 "referenceImagePath" TEXT NOT NULL,
                 "prompt" TEXT NOT NULL,
+                "ratio" TEXT NOT NULL DEFAULT '9:16',
                 "filePath" TEXT,
                 "status" TEXT NOT NULL DEFAULT 'pending',
                 "error" TEXT,
@@ -427,6 +434,13 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         )
         conn.execute('CREATE INDEX "VideoGeneration_projectId_idx" ON "VideoGeneration"("projectId")')
         conn.commit()
+    else:
+        video_gen_cols = {r[1] for r in conn.execute('PRAGMA table_info("VideoGeneration")').fetchall()}
+        if "ratio" not in video_gen_cols:
+            # 生成比例：老库这一列加之前一直是硬编码 9:16，自愈迁移出来默认值保持一致，
+            # 不影响老记录"重新生成"时的比例。
+            conn.execute('ALTER TABLE "VideoGeneration" ADD COLUMN "ratio" TEXT NOT NULL DEFAULT \'9:16\'')
+            conn.commit()
 
     if "TextImage" not in tables:
         # 独立文生图：同样不挂在 Project 下，纯"写描述 -> 出图"，跟海报共用出图风格

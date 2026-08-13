@@ -64,9 +64,24 @@ def _style_mode_for_shot(conn, shot_id: str) -> str:
     return row["styleMode"] if row and row["styleMode"] else DEFAULT_STYLE_MODE
 
 
+def _aspect_ratio_for_shot(conn, shot_id: str) -> str:
+    """分镜出图/出视频用的比例，来自这一镜所在项目的 Project.aspectRatio——一部剧
+    所有镜头必须用同一个比例才能在导出时拼到一起，所以这是项目级设置，不是每一镜
+    单独选(跟 styleMode 同一个道理，见 _style_mode_for_shot)。"""
+    row = conn.execute(
+        'SELECT p.aspectRatio AS aspectRatio FROM "Shot" sh '
+        'JOIN "Scene" sc ON sh.sceneId = sc.id JOIN "Story" s ON sc.storyId = s.id '
+        'JOIN "Project" p ON s.projectId = p.id WHERE sh.id = ?',
+        (shot_id,),
+    ).fetchone()
+    return row["aspectRatio"] if row and row["aspectRatio"] else DEFAULT_IMAGE_RATIO
+
+
 class SeedreamImageProvider(ImageProvider):
     """文生图 / 图生图，参数取自 PIPELINE.md 第①②步的经验：
-    - size 用 "1440x2560"（9:16 竖屏，对应手机短视频比例）
+    - size 默认 "1440x2560"（9:16 竖屏，对应手机短视频比例），实际取这一镜所在项目的
+      Project.aspectRatio(见 _aspect_ratio_for_shot)——一部剧所有镜头必须同一个比例
+      才能在导出时拼到一起，所以是项目级设置，不是每一镜单独选。
     - reference_image_paths 有值时走图生图，本地文件转 data URI 直接传给 Ark（不需要额外上传拿在线URL）
     - prompt 统一加风格前缀，避免没有参考图时风格漂移成真人/写实
     """
@@ -75,9 +90,11 @@ class SeedreamImageProvider(ImageProvider):
         with get_connection() as conn:
             settings = get_settings(conn)
             style_mode = _style_mode_for_shot(conn, shot_id)
+            aspect_ratio = _aspect_ratio_for_shot(conn, shot_id)
         api_key = settings.get("arkApiKey")
         model = settings.get("arkImageModel") or ark_client.DEFAULT_SEEDREAM_MODEL
         base_url = settings.get("arkBaseUrl") or ark_client.ARK_BASE_URL
+        size = IMAGE_RATIOS.get(aspect_ratio, IMAGE_RATIOS[DEFAULT_IMAGE_RATIO])["size"]
 
         reference_urls = None
         if reference_image_paths:
@@ -87,7 +104,7 @@ class SeedreamImageProvider(ImageProvider):
             api_key=api_key,
             prompt=_with_style(prompt, style_mode, settings.get("customStylePrefixes")),
             reference_image_urls=reference_urls,
-            size="1440x2560",
+            size=size,
             model=model,
             base_url=base_url,
         )
@@ -174,28 +191,62 @@ def generate_scene_reference(
 
 
 # 海报的画幅方向：跟出图风格前缀(STYLE_PREFIXES)不是一回事——那个是"整部剧的美术
-# 风格"，这个纯粹是"这张海报的构图/画幅比例"。size 是 Ark 支持的分辨率字符串，跟分镜
-# 生图同一个格式。构图提示语里都明确要求"不要出现任何文字"，标题/副标题是后面
-# poster_composer.py 用 Pillow 叠上去的，不指望 Seedream 把中文字画对。
+# 风格"，这个纯粹是"这张图/这张海报的构图/画幅比例"。size 是 Ark 支持的分辨率字符串，
+# 跟分镜生图同一个格式；ratio 是这个画幅对应的真实"宽:高"比例字符串，给 Seedance
+# (视频)的 --ratio 参数用——size 是给图片用的具体像素，两者要对应同一个比例。
+# 这份配置起初只给海报用(key 是 portrait/landscape)，现在短剧项目分镜、独立图生视频
+# 也复用同一套"比例词典"，所以后面又追加了 3 个直接以比例命名的 key(9:16/1:1/4:3)；
+# 已有数据库里存的 orientation="portrait"/"landscape" 完全不受影响，两个旧 key 原样保留，
+# 只是新增，不是替换，不用担心老海报/文生图记录"重新生成"时比例跑掉。
+# 构图提示语里都明确要求"不要出现任何文字"，标题/副标题是后面 poster_composer.py 用
+# Pillow 叠上去的，不指望 Seedream 把中文字画对(这条提示语只有生成海报时会用到，
+# 独立文生图/分镜出图/图生视频不会拼这句话)。
 POSTER_ORIENTATIONS = {
     "portrait": {
-        "label": "竖版",
+        "label": "竖版 3:4",
         "size": "1536x2048",
+        "ratio": "3:4",
         "composition": (
             "竖版宣传海报构图，电影感大场景/大氛围，画面留出足够的负空间"
             "（尤其是下方1/3区域）给后期叠加标题文字。"
         ),
     },
     "landscape": {
-        "label": "横版",
+        "label": "横版 16:9",
         "size": "2048x1152",
+        "ratio": "16:9",
         "composition": (
             "横版宣传图构图，适合做社交媒体封面/横幅，构图大气，下方或一侧留出干净区域"
             "给后期叠加标题文字。"
         ),
     },
+    "9:16": {
+        "label": "竖版 9:16（手机短视频）",
+        "size": "1440x2560",
+        "ratio": "9:16",
+        "composition": (
+            "9:16竖屏短视频构图，主体居中偏上，画面下方留出空间给后期叠加标题文字。"
+        ),
+    },
+    "1:1": {
+        "label": "方形 1:1",
+        "size": "2048x2048",
+        "ratio": "1:1",
+        "composition": "方形构图，主体居中，四周留出干净的负空间给后期叠加标题文字。",
+    },
+    "4:3": {
+        "label": "横版 4:3",
+        "size": "2048x1536",
+        "ratio": "4:3",
+        "composition": "4:3横版构图，画面下方或一侧留出干净区域给后期叠加标题文字。",
+    },
 }
 DEFAULT_POSTER_ORIENTATION = "portrait"
+# 短剧项目分镜/独立图生视频复用这份配置时，用这两个更准确的别名，代码读起来别再是
+# "POSTER_xxx"了；默认值特意保持跟分镜生图之前硬编码的尺寸(1440x2560/9:16)一致，
+# 加这个字段之前建的老项目自愈迁移出来的 aspectRatio 也是这个默认值，行为完全不变。
+IMAGE_RATIOS = POSTER_ORIENTATIONS
+DEFAULT_IMAGE_RATIO = "9:16"
 
 # 海报"类型"(医院海报/地陪翻译/科普知识/价格表/知识卡片……)不再写死在代码里——
 # 类型本质上就是"一段预置的内容提示语 + 一种排版方式"，这两样现在都存在

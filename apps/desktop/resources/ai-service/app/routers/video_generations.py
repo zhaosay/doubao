@@ -1,12 +1,13 @@
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db import get_connection, new_id, now_iso
 from app.providers.seedance import generate_video_from_image
+from app.providers.seedream import DEFAULT_IMAGE_RATIO, IMAGE_RATIOS
 from app.services.paths import to_static_url
 
 # 无剧本图生视频：独立的一级功能，不挂在任何 Project 详情页下面——不需要先建视频项目、
@@ -14,10 +15,13 @@ from app.services.paths import to_static_url
 # /video-generations，跟 /posters 是同一个模式。
 router = APIRouter(prefix="/video-generations", tags=["video-generations"])
 
+Ratio = Literal["portrait", "landscape", "9:16", "1:1", "4:3"]
+
 
 def _serialize(row) -> dict:
     d = dict(row)
     d["url"] = to_static_url(d.get("filePath"))
+    d["ratioLabel"] = IMAGE_RATIOS.get(d.get("ratio"), {}).get("label", d.get("ratio"))
     return d
 
 
@@ -29,9 +33,17 @@ def list_video_generations():
     return [_serialize(r) for r in rows]
 
 
+@router.get("/options")
+def list_video_generation_options():
+    """给前端渲染"生成比例"选择器用，跟海报/文生图共用同一份比例词典
+    (app/providers/seedream.py 的 IMAGE_RATIOS)。"""
+    return {"ratios": [{"id": rid, "label": cfg["label"]} for rid, cfg in IMAGE_RATIOS.items()]}
+
+
 class CreateVideoGenerationBody(BaseModel):
     referenceImagePath: str
     prompt: str
+    ratio: Ratio = DEFAULT_IMAGE_RATIO
     # 可选：备注这条视频是照哪个视频项目的调子出的，纯粹是提示性字段，不影响生成逻辑。
     projectId: Optional[str] = None
 
@@ -56,14 +68,14 @@ def create_video_generation(body: CreateVideoGenerationBody):
 
         video_id = new_id()
         conn.execute(
-            'INSERT INTO "VideoGeneration" (id, projectId, referenceImagePath, prompt, status, createdAt) '
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (video_id, body.projectId, reference_path, prompt, "running", now_iso()),
+            'INSERT INTO "VideoGeneration" (id, projectId, referenceImagePath, prompt, ratio, status, createdAt) '
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (video_id, body.projectId, reference_path, prompt, body.ratio, "running", now_iso()),
         )
 
     thread = threading.Thread(
         target=_run_video_generation,
-        args=(video_id, reference_path, prompt, body.projectId),
+        args=(video_id, reference_path, prompt, body.ratio, body.projectId),
         daemon=True,
     )
     thread.start()
@@ -71,9 +83,11 @@ def create_video_generation(body: CreateVideoGenerationBody):
     return {"videoId": video_id, "status": "running"}
 
 
-def _run_video_generation(video_id: str, reference_path: str, prompt: str, project_id: Optional[str]) -> None:
+def _run_video_generation(
+    video_id: str, reference_path: str, prompt: str, ratio: str, project_id: Optional[str]
+) -> None:
     try:
-        result = generate_video_from_image(video_id, reference_path, prompt, project_id=project_id)
+        result = generate_video_from_image(video_id, reference_path, prompt, ratio=ratio, project_id=project_id)
         with get_connection() as conn:
             conn.execute(
                 'UPDATE "VideoGeneration" SET status = ?, filePath = ?, providerId = ?, model = ?, '
@@ -97,7 +111,7 @@ def regenerate_video_generation(video_id: str):
 
     thread = threading.Thread(
         target=_run_video_generation,
-        args=(video_id, row["referenceImagePath"], row["prompt"], row["projectId"]),
+        args=(video_id, row["referenceImagePath"], row["prompt"], row["ratio"], row["projectId"]),
         daemon=True,
     )
     thread.start()

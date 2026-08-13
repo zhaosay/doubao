@@ -24,6 +24,12 @@ model Project {
   // 不管故事需不需要角色都会编几个人物出来，塞进 characterName，角色库看着莫名其妙
   // 多出一堆要处理的角色——加这个开关让用户在建项目时就说清楚"这个故事要不要人"。
   contentType String @default("character")
+  // 生成比例：这部剧所有分镜图片/视频统一用这个比例出图/出视频(挂在项目级别，跟
+  // styleMode 同一个道理——所有镜头必须同比例才能在导出时拼到一起，不是每一镜单独选)。
+  // 取值目前是 portrait(3:4)/landscape(16:9)/9:16/1:1/4:3，词典见
+  // app/providers/seedream.py 的 IMAGE_RATIOS。默认 9:16 是这个字段加之前分镜出图/
+  // 出视频硬编码用的比例，保证老项目自愈迁移出这一列后生成行为完全不变。
+  aspectRatio String @default("9:16")
   createdAt DateTime @default(now())
   // 最近一次导出成片成功的时间，null = 还没导出过。项目列表页用它显示"已导出"标签。
   lastExportedAt DateTime?
@@ -200,6 +206,11 @@ model VideoGeneration {
   project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   referenceImagePath String // 本地图片文件绝对路径，用作图生视频的起始帧
   prompt    String // 画面/运镜描述，直接喂给 Seedance
+  // 生成比例，取值跟 TextImage.orientation/Poster.orientation 同一套词典(见
+  // app/providers/seedream.py 的 IMAGE_RATIOS)，每次生成单独选，不挂在任何项目设置上——
+  // 这个功能本来就没有"项目"概念，projectId 只是可选备注。默认 9:16 是这个字段加之前
+  // 硬编码用的比例，保证老记录"重新生成"时比例不变。
+  ratio     String   @default("9:16")
   filePath  String?
   status    String   @default("pending") // pending | running | completed | failed
   error     String?

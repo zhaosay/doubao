@@ -21,7 +21,7 @@ from app.services.poster_composer import PosterComposeError, compose_poster
 router = APIRouter(prefix="/posters", tags=["posters"])
 
 StyleMode = Literal["comic", "realistic", "render3d", "freeform"]
-Orientation = Literal["portrait", "landscape"]
+Orientation = Literal["portrait", "landscape", "9:16", "1:1", "4:3"]
 LayoutMode = Literal["title", "textBlocks"]
 
 
