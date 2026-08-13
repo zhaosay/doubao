@@ -2547,8 +2547,8 @@ function statusLabel(status: string): string {
     <!-- 设置页 -->
     <section v-if="view === 'settings'" class="panel settings-page">
       <button v-if="activeProject" class="back" @click="view = 'project'">← 返回「{{ activeProject.title }}」</button>
-      <div class="settings-page-head">
-        <div><h1>设置</h1><p class="hint">火山方舟模型、AI生成剧本、IndexTTS 配音、生成与导出偏好、自定义提示词</p></div>
+      <div class="settings-page-head compact-page-head">
+        <div><h1>设置</h1><p class="hint">模型、剧本、配音、导出和提示词</p></div>
         <span class="settings-state" :class="settingsInfo.arkApiKeySet ? 'ready' : 'missing'">
           {{ settingsInfo.arkApiKeySet ? 'API 已配置' : 'API 未配置' }}
         </span>
@@ -2568,7 +2568,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'about'">
       <section class="settings-group settings-group-update">
-      <div class="settings-group-head"><div><h2>版本更新</h2><p>启动时自动检查 GitHub Release，新版会自动下载</p></div><span>{{ updateStatus.currentVersion }}</span></div>
+      <div class="settings-group-head"><div><h2>版本更新</h2><p>检查 GitHub Release 并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
       <div class="update-card">
         <div>
           <strong>{{ updateStatus.message }}</strong>
@@ -2595,7 +2595,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'general'">
       <section class="settings-group settings-group-primary">
-      <div class="settings-group-head"><div><h2>火山方舟模型配置</h2><p>生成图片和视频所使用的 Seedream / Seedance 服务</p></div><span>必填</span></div>
+      <div class="settings-group-head"><div><h2>火山方舟模型配置</h2><p>配置 Seedream 出图和 Seedance 视频</p></div><span>必填</span></div>
       <div class="field">
         <label>火山方舟 API Key <span class="field-badge">Seedream / Seedance</span></label>
         <input
@@ -2607,49 +2607,47 @@ function statusLabel(status: string): string {
       <div class="field">
         <label>Ark Base URL</label>
         <input v-model="settingsForm.arkBaseUrl" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
-        <p class="field-help">留空使用 Plan 套餐默认地址；普通按量付费账号使用 <code>.../api/v3</code></p>
+        <p class="field-help">Plan 套餐可留空；按量账号填 <code>.../api/v3</code>。</p>
       </div>
       <div class="field">
         <label>Seedance 视频模型 ID</label>
         <input v-model="settingsForm.arkVideoModel" placeholder="doubao-seedance-2.0" />
-        <p class="field-help">留空使用 <code>doubao-seedance-2.0</code>，配额打满时自动降级到 fast / mini。</p>
-        <details class="settings-doc"><summary>查看视频模型填写说明</summary><p class="hint model-ref-hint">
-          Plan 套餐账号（Base URL 是 .../api/plan/v3）填点号格式：<code>doubao-seedance-2.0</code> /
-          <code>doubao-seedance-2.0-fast</code> / <code>doubao-seedance-2.0-mini</code>；更新的
-          <code>Seedance 2.5</code> 是否已在你的账号开放、具体接入点名称，以控制台「模型广场」为准。
-          普通按量付费账号（Base URL 是 .../api/v3）不能填点号格式，得填控制台里带日期后缀的快照 ID
-          （形如 <code>doubao-seedance-x-x-xxxxxx</code>，具体型号和日期后缀以控制台「模型广场」
-          实际显示的为准，我没法在这里替你确认），或者先在控制台「创建推理接入点」，这里填
-          <code>ep-xxxxxxxx</code>。
-        </p></details>
+        <p class="field-help">留空用默认模型；不确定时填控制台里的推理接入点 <code>ep-xxxx</code>。</p>
+        <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
+          <ul class="hint model-ref-hint">
+            <li>Plan 套餐：<code>doubao-seedance-2.0</code> / <code>fast</code> / <code>mini</code>。</li>
+            <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
+            <li>具体可用型号以火山控制台「模型广场」为准。</li>
+          </ul>
+        </details>
       </div>
       <div class="field">
         <label>Seedream 图片模型 ID</label>
         <input v-model="settingsForm.arkImageModel" placeholder="doubao-seedream-5.0-lite" />
-        <p class="field-help">留空使用 <code>doubao-seedream-5.0-lite</code>。</p>
-        <details class="settings-doc"><summary>查看图片模型填写说明</summary><p class="hint model-ref-hint">
-          Plan 套餐账号填点号格式：<code>doubao-seedream-5.0-lite</code>（默认，速度快）/
-          <code>doubao-seedream-5.0-pro</code>（旗舰版，质量更高但更贵更慢）。
-          普通按量付费账号得填带日期后缀的快照 ID（比如 <code>doubao-seedream-4-0-250828</code>
-          这种形式），或者控制台给的推理接入点 <code>ep-xxxxxxxx</code>。这些型号火山引擎经常更新，
-          最准确的名单以控制台「模型广场」里实际展示的为准，这里列的只是写这段代码时查到的参考。
-        </p></details>
+        <p class="field-help">留空用默认模型；追求质量可改 pro。</p>
+        <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
+          <ul class="hint model-ref-hint">
+            <li>Plan 套餐：<code>doubao-seedream-5.0-lite</code> 或 <code>pro</code>。</li>
+            <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
+            <li>具体可用型号以火山控制台「模型广场」为准。</li>
+          </ul>
+        </details>
       </div>
       <div class="field">
         <label>Ark 文本对话模型 ID <span class="field-badge">"AI优化提示词"用</span></label>
         <input v-model="settingsForm.arkTextModel" placeholder="比如 doubao-seed-1.6" />
-        <p class="field-help">留空则各处"AI优化提示词"按钮自动改用下面「AI生成剧本配置」里配置的方式(本机 claude CLI / 第三方 API)。填了这里就优先走 Ark，速度更快。</p>
+        <p class="field-help">留空则使用「AI生成剧本配置」；填写后优先走 Ark。</p>
       </div>
       </section>
       </template>
 
       <template v-if="settingsTab === 'indextts'">
       <section class="settings-group settings-group-primary">
-      <div class="settings-group-head"><div><h2>IndexTTS 配音配置</h2><p>局域网配音服务地址，用于分镜配音和成片旁白</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>IndexTTS 配音配置</h2><p>配置本地或局域网配音服务</p></div><span>可选</span></div>
       <div class="field">
         <label>IndexTTS 服务地址 <span class="field-badge">局域网配音</span></label>
         <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://localhost:7860" />
-        <p class="field-help">填写能从本机访问的 IndexTTS Web 服务地址；不配置时不会影响图片、视频和剧本生成。</p>
+        <p class="field-help">不配置也能生成剧本、图片和视频。</p>
       </div>
       </section>
       </template>
@@ -2657,7 +2655,7 @@ function statusLabel(status: string): string {
       <template v-if="settingsTab === 'story'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head">
-        <div><h2>AI生成剧本配置</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
+        <div><h2>AI生成剧本配置</h2><p>选择本机 Claude 或第三方 API</p></div>
         <span>必填其一</span>
       </div>
       <div class="field story-gen-provider-field">
@@ -2672,7 +2670,7 @@ function statusLabel(status: string): string {
             @click="storyGenForm.provider = 'claude_cli'"
           >
             <strong>本机 claude CLI</strong>
-            <span>默认方式，需要本机装好 Claude Code 并登录</span>
+            <span>适合已安装 Claude Code</span>
           </button>
           <button
             type="button"
@@ -2683,7 +2681,7 @@ function statusLabel(status: string): string {
             @click="storyGenForm.provider = 'api'"
           >
             <strong>第三方 API</strong>
-            <span>Anthropic Messages API 兼容，不依赖本机终端</span>
+            <span>不依赖本机终端</span>
           </button>
         </div>
       </div>
@@ -2694,32 +2692,32 @@ function statusLabel(status: string): string {
           <div class="cli-path-row">
             <input
               v-model="storyGenForm.cliPath"
-              placeholder="留空 = 自动检测；找不到/找错了再手动填这里"
+              placeholder="留空 = 自动检测"
             />
             <button class="ghost" type="button" :disabled="storyGenCliDetect.detecting" @click="detectStoryGenCliPath">
               {{ storyGenCliDetect.detecting ? '检测中…' : '自动检测' }}
             </button>
           </div>
           <p v-if="storyGenCliDetect.message" class="field-help">{{ storyGenCliDetect.message }}</p>
-          <p class="field-help">默认走自动检测（PATH 查找 + 常见安装目录 + npm 全局 prefix），一般不用填。如果自动检测找不到，或者装在了自定义目录/换过 Node 版本导致检测到了错误的旧路径，点"自动检测"回填一次，确认没问题后记得点下面的"保存设置"；也可以直接手动粘贴 claude 可执行文件的完整路径。</p>
+          <p class="field-help">一般留空。找不到时点「自动检测」，或粘贴 claude 完整路径。</p>
         </div>
       </template>
 
       <div v-if="storyGenForm.provider === 'claude_cli'" class="story-gen-test-block">
-        <button class="ghost" :disabled="storyGenCliTest.testing" @click="testStoryGenCli">
+        <button class="ghost terminal-test-button" :disabled="storyGenCliTest.testing" @click="testStoryGenCli">
           {{ storyGenCliTest.testing ? '测试中…' : '测试本机终端是否生效' }}
         </button>
         <p v-if="storyGenCliTest.result" :class="['story-gen-test-result', storyGenCliTest.result.ok ? 'ok' : 'error']">
           {{ storyGenCliTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenCliTest.result.message }}
         </p>
-        <p class="field-help">点这个按钮会真的调用一次本机 <code>claude</code> 命令（如果上面填了路径，就用这个路径测）。如果失败，把上面的报错信息发给开发者，或者直接切换成下面的第三方 API 方式。</p>
+        <p class="field-help">会调用一次本机 <code>claude</code>，用来确认桌面 App 能找到命令。</p>
       </div>
 
       <template v-if="storyGenForm.provider === 'api'">
         <div class="field">
           <label>Base URL</label>
           <input v-model="storyGenForm.apiBaseUrl" placeholder="https://your-proxy.example.com/api" />
-          <p class="field-help">到 <code>/v1/messages</code> 之前的那一段地址，具体以你的第三方服务商提供的文档为准。</p>
+          <p class="field-help">填写到 <code>/v1/messages</code> 之前的地址。</p>
         </div>
         <div class="field">
           <label>API Key</label>
@@ -2744,7 +2742,7 @@ function statusLabel(status: string): string {
           <p v-if="storyGenApiTest.result" :class="['story-gen-test-result', storyGenApiTest.result.ok ? 'ok' : 'error']">
             {{ storyGenApiTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenApiTest.result.message }}
           </p>
-          <p class="field-help">会用上面填的配置（哪怕还没点保存）真的发一次请求测试；API Key 留空表示沿用已保存的那份。</p>
+          <p class="field-help">会用当前表单测试；API Key 留空则沿用已保存的。</p>
         </div>
       </template>
       </section>
@@ -2752,16 +2750,16 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'generation'">
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>生成目录</h2><p>角色图、场景图、分镜图片、视频和配音文件</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>生成目录</h2><p>设置素材保存位置</p></div><span>可选</span></div>
       <div class="field">
         <label>生成产物目录</label>
         <input v-model="settingsForm.outputDir" placeholder="留空 = 默认目录" />
-        <p class="field-help">留空使用项目根目录下的 output。修改后需要填写真实存在、可写入的绝对路径。</p>
+        <p class="field-help">留空使用默认 <code>output</code>；自定义路径必须存在且可写。</p>
       </div>
       </section>
 
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>导出</h2><p>成片保存位置和字幕偏好</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>导出</h2><p>设置成片、字幕和背景音乐</p></div><span>可选</span></div>
       <div class="field">
         <label>导出目录</label>
         <input v-model="settingsForm.exportDir" placeholder="留空 = 默认目录" />
@@ -2773,7 +2771,7 @@ function statusLabel(status: string): string {
       <div class="field">
         <label>背景音乐文件<span class="field-badge">可选</span></label>
         <input v-model="settingsForm.exportBgmPath" placeholder="本地音频文件路径，比如 bgm.mp3" />
-        <p class="field-help">导出时会循环叠加到成片音轨下面，支持 ffmpeg 能读的常见音频格式(mp3/wav/aac...)。</p>
+        <p class="field-help">会循环叠加到成片音轨下方，支持 mp3/wav/aac 等格式。</p>
       </div>
       <div class="field">
         <label>背景音乐音量<span class="field-badge">相对成片原音轨，0~1</span></label>
@@ -2789,20 +2787,18 @@ function statusLabel(status: string): string {
       <div class="field checkbox-field">
         <label>
           <input type="checkbox" v-model="settingsForm.exportUseBgm" :disabled="!settingsForm.exportBgmPath" />
-          导出时默认加背景音乐{{ settingsForm.exportBgmPath ? '' : '（先填上面的背景音乐文件路径才能勾选）' }}
+          导出时默认加背景音乐{{ settingsForm.exportBgmPath ? '' : '（先填音乐文件）' }}
         </label>
       </div>
       </section>
 
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>海报字体</h2><p>海报标题/副标题文字用它渲染叠加，需要支持中文</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>海报字体</h2><p>中文海报文字渲染用</p></div><span>可选</span></div>
       <div class="field">
         <label>字体文件路径</label>
-        <input v-model="settingsForm.posterFontPath" placeholder="留空 = 自动按操作系统猜系统字体" />
+        <input v-model="settingsForm.posterFontPath" placeholder="留空 = 自动检测" />
         <p class="field-help">
-          支持 <code>.ttf</code>/<code>.ttc</code>/<code>.otf</code>。生成海报时如果报"找不到可用的中文字体文件"，
-          就在这里填一个确定存在的中文字体路径，比如 macOS 的 <code>/System/Library/Fonts/PingFang.ttc</code>，
-          Windows 的 <code>C:\Windows\Fonts\msyh.ttc</code>。
+          留空自动使用系统中文字体；失败时再填写字体文件路径。
         </p>
       </div>
       </section>
@@ -2810,7 +2806,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'prompts'">
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>出图风格前缀</h2><p>每次生图自动加在 prompt 最前面的一句话，按出图风格分别覆盖，留空的风格用默认值</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>出图风格前缀</h2><p>按风格补充生图 prompt</p></div><span>可选</span></div>
       <div class="field" v-for="mode in (['comic', 'realistic', 'render3d', 'freeform'] as StyleMode[])" :key="`prefix-${mode}`">
         <label>{{ STYLE_MODE_LABELS[mode] }}</label>
         <textarea v-model="customStylePrefixesForm[mode]" rows="2" :placeholder="`留空 = ${BUILTIN_STYLE_PREFIXES[mode] || '（无前缀）'}`" />
@@ -2818,7 +2814,7 @@ function statusLabel(status: string): string {
       </section>
 
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>剧本写作风格提示</h2><p>喂给 claude 写剧本时的"画风参考"提示语，按出图风格分别覆盖</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>剧本写作风格提示</h2><p>影响 AI 写分镜时的画风描述</p></div><span>可选</span></div>
       <div class="field" v-for="mode in (['comic', 'realistic', 'render3d', 'freeform'] as StyleMode[])" :key="`hint-${mode}`">
         <label>{{ STYLE_MODE_LABELS[mode] }}</label>
         <textarea v-model="customStyleHintsForm[mode]" rows="2" :placeholder="`留空 = ${BUILTIN_STYLE_HINTS[mode]}`" />
@@ -2826,7 +2822,7 @@ function statusLabel(status: string): string {
       </section>
 
       <section class="settings-group">
-      <div class="settings-group-head"><div><h2>内容类型提示</h2><p>喂给 claude 的"要不要编人物"提示语，按内容类型分别覆盖</p></div><span>可选</span></div>
+      <div class="settings-group-head"><div><h2>内容类型提示</h2><p>控制是否需要固定角色</p></div><span>可选</span></div>
       <div class="field" v-for="ct in (['character', 'no_character'] as ContentType[])" :key="`ct-${ct}`">
         <label>{{ CONTENT_TYPE_LABELS[ct] }}</label>
         <textarea v-model="customContentTypeHintsForm[ct]" rows="2" :placeholder="`留空 = ${BUILTIN_CONTENT_TYPE_HINTS[ct]}`" />
@@ -2835,7 +2831,7 @@ function statusLabel(status: string): string {
 
       <section class="settings-group">
       <div class="settings-group-head">
-        <div><h2>项目类型模板</h2><p>新建项目页那几张模板卡片，留空(不加任何一行)= 用内置的 AI漫剧/AI真人剧/3D形象动漫等默认模板；只要加了至少一行，就整份替换默认模板列表（"自定义…"这个兜底选项始终保留）</p></div>
+        <div><h2>项目类型模板</h2><p>自定义新建项目页的模板卡片</p></div>
         <span>可选</span>
       </div>
       <div class="custom-template-rows">
@@ -2854,8 +2850,9 @@ function statusLabel(status: string): string {
           </select>
           <button class="ghost" @click="removeCustomProjectTemplateRow(idx)">删除</button>
         </div>
-        <p v-if="customProjectTemplatesForm.length === 0" class="hint">还没有自定义模板，现在用的是内置的默认模板卡片</p>
+        <p v-if="customProjectTemplatesForm.length === 0" class="hint">未添加自定义模板，当前使用内置模板。</p>
       </div>
+      <p class="field-help">不添加自定义行 = 使用内置模板；添加任意行 = 替换内置模板。</p>
       <button class="ghost" @click="addCustomProjectTemplateRow">+ 添加一张模板卡片</button>
       </section>
       </template>
@@ -2871,7 +2868,7 @@ function statusLabel(status: string): string {
          的步骤条里，没打开项目时反而看不了，不太合理。 -->
     <section v-else-if="view === 'manual'" class="panel manual-page">
       <button v-if="activeProject" class="back" @click="view = 'project'">← 返回「{{ activeProject.title }}」</button>
-      <div class="manual-page-head">
+      <div class="manual-page-head compact-page-head">
         <div><h1>分镜与运镜手册</h1><p class="hint">查找专业术语并复制到镜头设置</p></div>
         <span class="manual-result-count">{{ filteredManualEntries.length }} 条</span>
       </div>
@@ -2915,7 +2912,7 @@ function statusLabel(status: string): string {
 
     <!-- 项目列表 -->
     <section v-else-if="view === 'projects'" class="panel projects-page">
-      <div class="projects-page-head">
+      <div class="projects-page-head compact-page-head">
         <div>
           <h1>{{ projectsTab === 'create' ? '新建短剧' : '短剧列表' }}</h1>
           <p class="hint">{{ projectsTab === 'create' ? '选一个模板，一句话说清楚想要什么' : '创建和管理 AI 短剧项目' }}</p>
@@ -3021,7 +3018,7 @@ function statusLabel(status: string): string {
     <!-- 海报：独立的一级功能，不挂在任何视频项目下面，建海报不需要先建视频项目、
          写完剧本才能出海报。跟"项目"页同一套 list/create 两个 tab 的结构。 -->
     <section v-else-if="view === 'posters'" class="panel posters-page">
-      <div class="projects-page-head">
+      <div class="projects-page-head compact-page-head">
         <div>
           <h1>{{ postersTab === 'create' ? '新建海报' : '海报列表' }}</h1>
           <p class="hint">{{ postersTab === 'create' ? '选朝向和类型模版（或自己写提示词），填标题，AI 只画背景，文字是程序渲染叠上去的' : '所有生成过的海报，不分项目' }}</p>
@@ -3080,7 +3077,7 @@ function statusLabel(status: string): string {
               <div class="ai-optimize-row">
                 <button
                   type="button"
-                  class="ghost"
+                  class="ghost ai-optimize-button"
                   :disabled="promptOptimizeState('posterPrompt').optimizing"
                   @click="optimizePromptField('posterPrompt', posterForm.promptText, '海报背景画面描述', (v) => (posterForm.promptText = v))"
                 >
@@ -3247,8 +3244,8 @@ function statusLabel(status: string): string {
          独立的一级功能，不挂在任何视频项目下面，不经过 Project/Story/Scene/Shot
          结构，也没有配音/字幕/多段拼接——单张参考图进，单条视频出。 -->
     <section v-else-if="view === 'videoGen'" class="panel posters-page">
-      <div class="projects-page-head video-gen-page-head">
-        <div class="video-gen-head-titles">
+      <div class="projects-page-head compact-page-head">
+        <div>
           <h1>{{ videoGenTab === 'create' ? '图生视频' : '视频列表' }}</h1>
           <p class="hint">{{ videoGenTab === 'create' ? '上传一张参考图 + 写一段画面/运镜描述，直接生成一条视频（不需要先建项目/写剧本）' : '所有生成过的视频，不分项目' }}</p>
         </div>
@@ -3290,7 +3287,7 @@ function statusLabel(status: string): string {
             <div class="ai-optimize-row">
               <button
                 type="button"
-                class="ghost"
+                class="ghost ai-optimize-button"
                 :disabled="promptOptimizeState('videoGenPrompt').optimizing"
                 @click="optimizePromptField('videoGenPrompt', videoGenForm.prompt, '图生视频的画面/运镜描述', (v) => (videoGenForm.prompt = v))"
               >
@@ -3357,7 +3354,7 @@ function statusLabel(status: string): string {
     <!-- 文生图：独立的一级功能，写一段描述直接出图，不做标题文字合成，跟海报共用
          出图风格(styleMode)和画幅(orientation)概念。 -->
     <section v-else-if="view === 'textImages'" class="panel posters-page text-images-page">
-      <div class="projects-page-head">
+      <div class="projects-page-head compact-page-head">
         <div>
           <h1>{{ textImagesTab === 'create' ? '新建文生图' : '文生图列表' }}</h1>
           <p class="hint">{{ textImagesTab === 'create' ? '写一段画面描述直接出图，不做任何文字合成' : '所有生成过的图片，不分项目' }}</p>
@@ -3388,7 +3385,7 @@ function statusLabel(status: string): string {
               <div class="ai-optimize-row">
                 <button
                   type="button"
-                  class="ghost"
+                  class="ghost ai-optimize-button"
                   :disabled="promptOptimizeState('textImagePrompt').optimizing"
                   @click="optimizePromptField('textImagePrompt', textImageForm.prompt, '文生图画面描述', (v) => (textImageForm.prompt = v))"
                 >
@@ -3647,7 +3644,7 @@ function statusLabel(status: string): string {
             <span class="story-outline-index">第{{ scene.order + 1 }}场</span>
             <input v-model="scene.summary" placeholder="场次描述" @change="saveScene(scene)" />
             <span class="story-outline-count">{{ scene.shots.length }} 镜</span>
-            <button class="ghost" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">+ 镜头</button>
+            <button class="ghost shot-add-button" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">+ 镜头</button>
             <button class="ghost danger" @click="deleteScene(scene.id)">删除</button>
           </div>
         </div>
@@ -3670,7 +3667,7 @@ function statusLabel(status: string): string {
                 @change="saveScene(scene)"
               />
               <span class="hint">{{ scene.shots.length }} 镜</span>
-              <button class="ghost" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">
+              <button class="ghost shot-add-button" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">
                 {{ addingShot[scene.id] ? '…' : '+ 镜头' }}
               </button>
               <button class="ghost danger" @click="deleteScene(scene.id)">删除场次</button>
@@ -3767,7 +3764,7 @@ function statusLabel(status: string): string {
             <div class="ai-optimize-row">
               <button
                 type="button"
-                class="ghost"
+                class="ghost ai-optimize-button"
                 :disabled="promptOptimizeState(`characterPrompt-${c.id}`).optimizing"
                 @click="optimizePromptField(`characterPrompt-${c.id}`, c.prompt ?? '', `角色「${c.name}」的外观设定图描述`, (v) => { c.prompt = v; saveCharacterPrompt(c) })"
               >
@@ -3861,7 +3858,7 @@ function statusLabel(status: string): string {
                   />
                   <button
                     type="button"
-                    class="ghost"
+                    class="ghost ai-optimize-button"
                     :disabled="promptOptimizeState(`sceneSummary-${scene.id}`).optimizing"
                     @click.stop="optimizePromptField(`sceneSummary-${scene.id}`, scene.summary ?? '', '短剧场次描述，同时也是这场戏场景参考图的生成提示词', (v) => { scene.summary = v; saveScene(scene) })"
                   >
@@ -4022,7 +4019,7 @@ function statusLabel(status: string): string {
                     </span>
                   </button>
                   <button
-                    class="shot-tab-add"
+                    class="shot-tab-add shot-add-button"
                     :disabled="addingShot[scene.id]"
                     :title="`在镜头${shot.order + 1}后新增镜头`"
                     @click="addShotAfter(scene, shot.id)"
@@ -4441,7 +4438,7 @@ function statusLabel(status: string): string {
                   </Transition>
                 </div>
                 <p v-if="scene.shots.length === 0" class="hint">这场戏还没有镜头。</p>
-                <button class="ghost shot-row-add" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">
+                <button class="ghost shot-add-button shot-row-add" :disabled="addingShot[scene.id]" @click="addShot(scene.id)">
                   {{ addingShot[scene.id] ? '添加中…' : '+ 镜头' }}
                 </button>
               </div>
@@ -4791,6 +4788,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ghost.accent { color: white; border-color: #16a34a; background: #16a34a; }
 .ghost.accent:hover:not(:disabled) { background: #15803d; border-color: #15803d; }
 .ghost.accent:disabled { color: #d4d4d8; border-color: #e4e4e7; background: #f4f4f5; }
+.terminal-test-button { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; font-weight: 650; }
+.terminal-test-button:hover:not(:disabled) { color: white; border-color: #2563eb; background: #2563eb; }
+.ai-optimize-button { color: #c2410c; border-color: #fed7aa; background: #fff7ed; font-weight: 650; }
+.ai-optimize-button:hover:not(:disabled) { color: white; border-color: #ea580c; background: #ea580c; }
+.shot-add-button { color: #047857; border-color: #a7f3d0; background: #ecfdf5; font-weight: 700; }
+.shot-add-button:hover:not(:disabled) { color: white; border-color: #059669; background: #059669; }
+.terminal-test-button:disabled,
+.ai-optimize-button:disabled,
+.shot-add-button:disabled { color: #a1a1aa; border-color: #e4e4e7; background: #f4f4f5; }
 
 
 .story-view-toggle { display: flex; align-items: center; gap: 8px; margin: 12px 0 16px; flex-wrap: wrap; }
@@ -5260,6 +5266,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .projects-page-head h1 { margin: 0 0 2px; font-size: 20px; line-height: 1.2; }
 .ui-v2 .projects-page-head p { margin: 0; }
+.ui-v2 .compact-page-head > div {
+  display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1;
+}
+.ui-v2 .compact-page-head h1 { flex-shrink: 0; margin: 0; }
+.ui-v2 .compact-page-head p {
+  min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ui-v2 .compact-page-head > button,
+.ui-v2 .compact-page-head > span { flex-shrink: 0; }
 .ui-v2 .projects-page-head h1,
 .ui-v2 .settings-page-head h1,
 .ui-v2 .manual-page-head h1 {
@@ -5269,12 +5284,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 16px; margin-bottom: 22px; border: 1px solid #e4e4e7; border-radius: 12px; background: #fbfbfd;
 }
 .ui-v2 .project-create-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.ui-v2 .project-create-head > div {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
 .ui-v2 .project-create-panel h2 { margin: 0; font-size: 16px; }
 .ui-v2 .project-create-head h2,
 .ui-v2 .project-list-head h2 {
   color: #2563eb;
 }
-.ui-v2 .project-create-head p { margin: 3px 0 0; }
+.ui-v2 .project-create-head p {
+  min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ui-v2 .project-create-head > span { padding: 3px 8px; border-radius: 999px; background: #ececf0; color: #71717a; font-size: 10px; font-weight: 700; }
 .ui-v2 .project-create-panel > .hint { display: block; margin: 10px 0 0; line-height: 1.55; }
 .ui-v2 .project-create-form {
@@ -5291,9 +5311,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px;
   border-radius: 999px; background: #2563eb; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
 }
-.ui-v2 .project-create-step-title > div { display: flex; align-items: baseline; gap: 8px; }
+.ui-v2 .project-create-step-title > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .ui-v2 .project-create-step-title strong { font-size: 13px; }
-.ui-v2 .project-create-step-title small { color: #8a8a90; font-size: 11px; }
+.ui-v2 .project-create-step-title small {
+  min-width: 0; color: #8a8a90; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ui-v2 .project-template-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; width: 100%; }
 .ui-v2 .project-template-card {
   position: relative; display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
@@ -5348,7 +5370,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   border-radius: 999px; background: #ea580c; color: white; font-size: 11px; font-weight: 800; flex-shrink: 0;
 }
-.ui-v2 .poster-step-head > div, .ui-v2 .poster-visual-settings summary > div { display: flex; align-items: baseline; gap: 8px; }
+.ui-v2 .poster-step-head > div, .ui-v2 .poster-visual-settings summary > div {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
 .ui-v2 .poster-step-head strong, .ui-v2 .poster-visual-settings summary strong { font-size: 14px; }
 .ui-v2 .poster-step-head strong,
 .ui-v2 .poster-visual-settings summary strong,
@@ -5356,16 +5380,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .poster-create-actions > div > strong {
   color: #c2410c;
 }
-.ui-v2 .poster-step-head small, .ui-v2 .poster-visual-settings summary small { color: #8a8a90; font-size: 11px; }
+.ui-v2 .poster-step-head small, .ui-v2 .poster-visual-settings summary small {
+  min-width: 0; color: #8a8a90; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ui-v2 .poster-form-section .field { margin-bottom: 16px; gap: 7px; }
 .ui-v2 .poster-form-section .field:last-child { margin-bottom: 0; }
 .ui-v2 .poster-form-section .field > label { font-weight: 650; color: #27272a; }
 
-/* 图生视频表单精简：label 和单行输入内容放一行，不再各占一行浪费竖向空间；
-   标题+说明合并到一行显示，尽量让整个创建表单在一屏内看完。 */
-.video-gen-page-head .video-gen-head-titles { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
-.video-gen-page-head .video-gen-head-titles h1 { flex-shrink: 0; }
-.video-gen-page-head .video-gen-head-titles p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* 图生视频表单精简：label 和单行输入内容放一行，不再各占一行浪费竖向空间。 */
 .video-gen-form-main { max-width: 720px; }
 .ui-v2 .field-inline { display: flex; flex-direction: row; align-items: center; gap: 12px; }
 .ui-v2 .field-inline > label { flex-shrink: 0; min-width: 64px; margin: 0; }
@@ -5480,6 +5502,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .settings-page-head {
   padding-bottom: 14px; border-bottom: 1px solid #e4e4e7;
 }
+.ui-v2 .settings-page-head { align-items: center; }
 .ui-v2 .settings-page-head h1 { font-size: 22px; line-height: 1.2; }
 .ui-v2 .settings-page-head p { font-size: 12px; }
 .ui-v2 .settings-state {
@@ -5494,9 +5517,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .settings-group-primary { background: white; }
 .ui-v2 .settings-group-update { grid-column: 1 / -1; background: white; }
 .ui-v2 .settings-group-head { margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #e4e4e7; }
+.ui-v2 .settings-group-head > div {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
 .ui-v2 .settings-group-head h2 { font-size: 16px; }
 .ui-v2 .settings-group-head h2 { color: #7c3aed; }
-.ui-v2 .settings-group-head p { color: #8a8a90; font-size: 12px; }
+.ui-v2 .settings-group-head p {
+  min-width: 0; color: #8a8a90; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ui-v2 .settings-group-head > span {
   padding: 3px 7px; border-radius: 999px; background: #f0f0f2; color: #71717a; font-size: 10px; font-weight: 700;
 }
@@ -5703,6 +5731,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   position: absolute; top: 9px; right: 9px; z-index: 2; width: 28px; min-width: 28px; min-height: 28px;
   padding: 0; border-radius: 999px; background: white; color: #52525b; font-size: 17px;
 }
+.ui-v2 .shot-tab-add.shot-add-button { color: #047857; border-color: #a7f3d0; background: #ecfdf5; }
+.ui-v2 .shot-tab-add.shot-add-button:hover:not(:disabled) { color: white; border-color: #059669; background: #059669; }
 /* 转场连接点：默认是个不起眼的灰色 →；一旦这一镜设置了转场效果，就换成蓝色高亮的
    小徽标并显示转场名称，一眼能看出"这两镜之间有没有设置转场、设置的是什么"。 */
 .ui-v2 .shot-tab-arrow {
