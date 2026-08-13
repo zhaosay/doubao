@@ -321,11 +321,20 @@ def _call_claude_cli(prompt: str, cli_path_override: str | None = None) -> str:
 
     try:
         proc = subprocess.run(
-            [command, "-p", prompt, "--output-format", "json"],
+            # prompt 通过 stdin 传，不再拼进命令行参数——claude -p 不带参数时就是标准
+            # Unix filter 用法(echo "..." | claude -p)，官方文档写明的用法。之前把 prompt
+            # 直接塞进 argv，在 Windows 上 .cmd 只能通过 cmd.exe 转发执行，中文/长文本
+            # 提示词过这一层命令行转发时可能因为系统代码页问题被截断/乱码，claude 收到
+            # 损坏的参数后直接退出且不留任何报错(用户实测复现：手动在终端跑通，但走
+            # 我们这条调用链却"退出码1+stdout/stderr全空")。走 stdin 管道传输是二进制
+            # 精确的，不经过命令行解析这一层，从根上绕开这类编码问题，长 prompt 也不用
+            # 担心 Windows 命令行长度上限(约 8191 字符)。
+            [command, "-p", "--output-format", "json"],
+            input=prompt,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=CLAUDE_TIMEOUT_SEC,
-            stdin=subprocess.DEVNULL,  # 后台线程里跑，没有交互式终端；不传这个 claude 会卡住等 stdin
         )
     except subprocess.TimeoutExpired as exc:
         raise StoryGenerationError(f"claude CLI 超过 {CLAUDE_TIMEOUT_SEC} 秒没有返回") from exc
@@ -575,11 +584,14 @@ def test_claude_cli(cli_path_override: str | None = None, timeout_sec: int = TES
 
     try:
         proc = subprocess.run(
-            [command, "-p", _TEST_PROMPT, "--output-format", "json"],
+            # 跟 _call_claude_cli 同一个理由：prompt 走 stdin，不拼进命令行参数，
+            # 绕开 Windows 上 .cmd 转发导致的中文/编码问题。
+            [command, "-p", "--output-format", "json"],
+            input=_TEST_PROMPT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout_sec,
-            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return False, f"claude CLI 超过 {timeout_sec} 秒没有返回，可能是没登录/网络问题，也可能只是这次比较慢"
