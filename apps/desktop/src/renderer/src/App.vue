@@ -438,14 +438,15 @@ const settingsInfo = reactive({ arkApiKeySet: false, arkApiKeyMasked: '' })
 const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
-// 设置页原来是一长条竖着滚下去的表单(9个分组)，改成选项卡分区看着更清楚：
-// 常规(模型服务+剧本生成方式，必填项都在这) / 生成与导出(目录+导出+海报字体) /
+// 设置页原来是一长条竖着滚下去的表单，改成选项卡分区看着更清楚：
+// 常规(模型服务) / AI生成剧本(本机 Claude 或第三方 API) / 生成与导出(目录+导出+海报字体) /
 // 提示词与模板(4个自定义提示词分组) / 关于(版本更新)。"保存全部设置"按钮不分tab，
 // 固定在页面底部，切哪个tab都能一次性保存所有字段(后端本来就是整份 PUT)。
-type SettingsTab = 'general' | 'generation' | 'prompts' | 'about'
+type SettingsTab = 'general' | 'story' | 'generation' | 'prompts' | 'about'
 const settingsTab = ref<SettingsTab>('general')
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: '常规' },
+  { id: 'story', label: 'AI生成剧本' },
   { id: 'generation', label: '生成与导出' },
   { id: 'prompts', label: '提示词与模板' },
   { id: 'about', label: '关于' }
@@ -2377,7 +2378,7 @@ function statusLabel(status: string): string {
     <section v-if="view === 'settings'" class="panel settings-page">
       <button v-if="activeProject" class="back" @click="view = 'project'">← 返回「{{ activeProject.title }}」</button>
       <div class="settings-page-head">
-        <div><h1>设置</h1><p class="hint">模型服务、生成与导出偏好、自定义提示词</p></div>
+        <div><h1>设置</h1><p class="hint">模型服务、AI生成剧本、生成与导出偏好、自定义提示词</p></div>
         <span class="settings-state" :class="settingsInfo.arkApiKeySet ? 'ready' : 'missing'">
           {{ settingsInfo.arkApiKeySet ? 'API 已配置' : 'API 未配置' }}
         </span>
@@ -2469,7 +2470,9 @@ function statusLabel(status: string): string {
         <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://localhost:7860" />
       </div>
       </section>
+      </template>
 
+      <template v-if="settingsTab === 'story'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head">
         <div><h2>AI生成剧本</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
