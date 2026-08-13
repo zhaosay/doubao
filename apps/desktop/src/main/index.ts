@@ -2,7 +2,7 @@ import { ChildProcess, spawn } from 'child_process'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { extname, join } from 'path'
+import { delimiter, extname, join } from 'path'
 
 // package.json 的 name 是带 scope 的 "@ai-manju/desktop"——Electron 默认拿它来算
 // app.getPath('userData') 之类的路径，斜杠在文件名里不安全，行为也因平台而异。
@@ -227,6 +227,23 @@ function ensureUserDataDb(dbPath: string): void {
   copyFileSync(seedDbPath, dbPath)
 }
 
+function withWindowsCliPath(env: Record<string, string>): Record<string, string> {
+  if (process.platform !== 'win32') return env
+
+  const candidateDirs = [
+    process.env.APPDATA ? join(process.env.APPDATA, 'npm') : '',
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Volta', 'bin') : '',
+    process.env.ProgramFiles ? join(process.env.ProgramFiles, 'nodejs') : '',
+    process.env['ProgramFiles(x86)'] ? join(process.env['ProgramFiles(x86)'], 'nodejs') : ''
+  ].filter(Boolean)
+
+  return {
+    ...env,
+    PATH: [...candidateDirs, process.env.PATH ?? ''].join(delimiter)
+  }
+}
+
 function resolveAiServiceRuntime(): AiServiceRuntime {
   // 打包模式：ai-service 源码和种子数据库都来自安装包内的 resources，用户数据放到
   // app.getPath('userData')，避免写安装目录。Windows 额外内置了 python-win；macOS
@@ -255,7 +272,7 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
     }
 
     ensureUserDataDb(dbPath)
-    return { pythonBin, aiServiceDir, extraEnv }
+    return { pythonBin, aiServiceDir, extraEnv: withWindowsCliPath(extraEnv) }
   }
 
   // 开发模式：走原来的仓库相对路径 + venv，行为完全不变。

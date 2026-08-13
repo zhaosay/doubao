@@ -14,10 +14,13 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import requests
 
@@ -112,12 +115,51 @@ def _parse_scenes(content: str, source_label: str) -> list[dict]:
     return scenes
 
 
+def _claude_command() -> str | None:
+    """Find Claude Code CLI in GUI-launched packaged apps as well as normal shells."""
+    for name in ("claude", "claude.cmd", "claude.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    if platform.system() != "Windows":
+        return None
+
+    candidate_dirs = [
+        Path(os.environ.get("APPDATA", "")) / "npm",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Volta" / "bin",
+        Path(os.environ.get("PROGRAMFILES", "")) / "nodejs",
+        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "nodejs",
+    ]
+    for directory in candidate_dirs:
+        if not directory:
+            continue
+        for name in ("claude.cmd", "claude.exe", "claude"):
+            candidate = directory / name
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def _missing_claude_message() -> str:
+    return (
+        "本机没有找到 claude 命令（Claude Code CLI）。如果终端里能运行 claude，"
+        "请重启本应用；Windows 用户还要确认 Claude Code 的安装目录已加入系统 PATH。"
+        "也可以在设置页切换成第三方 API 方式。"
+    )
+
+
 def _call_claude_cli(prompt: str) -> str:
     """跑一次 claude CLI，返回剥掉 --output-format json 外层包装之后的原始文本内容
     （还没解析成 scenes，留给 _parse_scenes 统一处理）。"""
+    command = _claude_command()
+    if not command:
+        raise StoryGenerationError(_missing_claude_message())
+
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "json"],
+            [command, "-p", prompt, "--output-format", "json"],
             capture_output=True,
             text=True,
             timeout=CLAUDE_TIMEOUT_SEC,
@@ -277,11 +319,8 @@ def generate_story_scenes(
             raise StoryGenerationError(
                 f"第三方 API 方式缺少配置项：{'、'.join(missing)}，请先在设置页填完整。"
             )
-    elif not shutil.which("claude"):
-        raise StoryGenerationError(
-            "本机没有找到 claude 命令（Claude Code CLI），请先安装并登录，"
-            "或者在设置页切换成第三方 API 方式。"
-        )
+    elif not _claude_command():
+        raise StoryGenerationError(_missing_claude_message())
 
     if custom_style_hints and custom_style_hints.get(style_mode):
         style_hint = custom_style_hints[style_mode]
@@ -321,12 +360,13 @@ def test_claude_cli(timeout_sec: int = TEST_TIMEOUT_SEC) -> tuple[bool, str]:
     不走 generate_story_scenes 那套"必须解析出 JSON 数组"的逻辑——测试连通性
     不需要真的生成分镜，claude 随便回句话就算通。
     """
-    if not shutil.which("claude"):
-        return False, "本机没有找到 claude 命令（Claude Code CLI），请先安装并确认已加入 PATH"
+    command = _claude_command()
+    if not command:
+        return False, _missing_claude_message()
 
     try:
         proc = subprocess.run(
-            ["claude", "-p", _TEST_PROMPT, "--output-format", "json"],
+            [command, "-p", _TEST_PROMPT, "--output-format", "json"],
             capture_output=True,
             text=True,
             timeout=timeout_sec,
