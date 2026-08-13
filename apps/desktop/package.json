@@ -1,6 +1,6 @@
 {
   "name": "@ai-manju/desktop",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
@@ -86,18 +86,17 @@
         {
           "target": "dmg",
           "arch": [
-            "x64",
-            "arm64"
+            "universal"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "x64",
-            "arm64"
+            "universal"
           ]
         }
       ],
+      "artifactName": "AI-Manju-${version}-${arch}.${ext}",
       "identity": null
     },
     "publish": [

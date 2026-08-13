@@ -2475,12 +2475,32 @@ function statusLabel(status: string): string {
         <div><h2>AI生成剧本</h2><p>默认用本机终端的 claude 命令生成分镜脚本；本机没有终端环境（比如很多 Windows 用户）时可以切换成第三方 API</p></div>
         <span>必填其一</span>
       </div>
-      <div class="field">
+      <div class="field story-gen-provider-field">
         <label>生成方式</label>
-        <select v-model="storyGenForm.provider">
-          <option value="claude_cli">本机 claude CLI（默认，需要本机装好 Claude Code 并登录）</option>
-          <option value="api">第三方 API（Anthropic Messages API 兼容，不依赖本机终端）</option>
-        </select>
+        <div class="story-gen-provider-tabs" role="tablist" aria-label="剧本生成方式">
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: storyGenForm.provider === 'claude_cli' }"
+            role="tab"
+            :aria-selected="storyGenForm.provider === 'claude_cli'"
+            @click="storyGenForm.provider = 'claude_cli'"
+          >
+            <strong>本机 claude CLI</strong>
+            <span>默认方式，需要本机装好 Claude Code 并登录</span>
+          </button>
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: storyGenForm.provider === 'api' }"
+            role="tab"
+            :aria-selected="storyGenForm.provider === 'api'"
+            @click="storyGenForm.provider = 'api'"
+          >
+            <strong>第三方 API</strong>
+            <span>Anthropic Messages API 兼容，不依赖本机终端</span>
+          </button>
+        </div>
       </div>
 
       <div v-if="storyGenForm.provider === 'claude_cli'" class="story-gen-test-block">
@@ -4277,6 +4297,16 @@ body {
 .settings-state, .field-badge { font-size: 10px; }
 .field-help { margin: 0; font-size: 11px; color: #8a8a90; }
 .settings-doc summary { cursor: pointer; }
+.story-gen-provider-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.story-gen-provider-tab {
+  min-height: 78px; text-align: left; white-space: normal;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px;
+  padding: 12px 14px; border: 1px solid #e4e4e7; border-radius: 12px; background: white; color: #18181b;
+}
+.story-gen-provider-tab strong { font-size: 14px; line-height: 1.35; }
+.story-gen-provider-tab span { color: #71717a; font-size: 12px; line-height: 1.45; }
+.story-gen-provider-tab.active { border-color: #18181b; background: #18181b; color: white; }
+.story-gen-provider-tab.active span { color: #d4d4d8; }
 .story-gen-test-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 0 14px; }
 .story-gen-test-result { margin: 0; font-size: 12px; line-height: 1.5; }
 .story-gen-test-result.ok { color: #16a34a; }
@@ -5415,6 +5445,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
   .ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
   .ui-v2 .settings-tabs { grid-column: auto; }
+  .ui-v2 .story-gen-provider-tabs { grid-template-columns: 1fr; }
   .ui-v2 .settings-actions { align-items: stretch; flex-direction: column; }
   .ui-v2 .update-card { align-items: stretch; flex-direction: column; }
   .ui-v2 .update-actions { justify-content: flex-start; }
