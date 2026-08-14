@@ -1,5 +1,5 @@
 import { ChildProcess, spawn, spawnSync } from 'child_process'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'fs'
 import { createServer } from 'net'
@@ -12,13 +12,14 @@ import { delimiter, dirname, extname, join } from 'path'
 // 稳定可预期，不用赌 Electron 对 scoped 包名的兜底行为。
 app.setName('ai-manju-mvp')
 
-// 端口不再死锁 8000——用户反馈过这台机器上另一个自己的项目（机械臂控制台）也用
-// 8000，两个程序抢端口时后者会直接绑定失败，ai-service 起不来，渲染进程那边看到的
-// 是一头雾水的连接失败/500。8000 大概率还是空的，优先试它（不用每次都随机换端口
-// 增加排查成本），被占用了就退回让操作系统分配一个当前空闲的端口。选定的结果会在
+// 端口不再死锁 8000——8000 是极其常见的"随手一个本地服务端口"（FastAPI/uvicorn 官方
+// 文档示例、无数教程/脚手架都默认用它），用户反馈过这台机器上另一个自己的项目（机械臂
+// 控制台）也用 8000。换成一个不常见的端口号大幅降低撞车概率；就算真撞上了，
+// findAvailablePort 还是会兜底换一个操作系统当前分配的空闲端口。选定的结果会在
 // createWindow() 之前写进 process.env，preload 里的 apiBaseUrl 就能读到真实端口，
 // 不需要额外一轮 IPC 往返。
-let AI_SERVICE_PORT = 8000
+const PREFERRED_AI_SERVICE_PORT = 47821
+let AI_SERVICE_PORT = PREFERRED_AI_SERVICE_PORT
 const RELEASES_URL = 'https://github.com/zhaosay/doubao/releases/latest'
 
 function findAvailablePort(preferred: number): Promise<number> {
@@ -37,7 +38,18 @@ function findAvailablePort(preferred: number): Promise<number> {
     server.once('listening', () => {
       server.close(() => resolve(preferred))
     })
-    server.listen(preferred, '127.0.0.1')
+    // 探测特意绑定 0.0.0.0（通配地址），而不是 ai-service 最终真正会用的 127.0.0.1：
+    // 已经实测确认过 Windows 上一些第三方服务端框架（不是这个探测用的 Node，是被
+    // 占用方那一侧）会给自己的监听 socket 开 SO_REUSEADDR，这种情况下即使端口已经被
+    // 占了，我们这边如果只探测更"具体"的 127.0.0.1 地址，绑定仍可能成功——探测通过了，
+    // 但操作系统对这个端口后续连接的路由在两个监听者之间可能不稳定，实测复现过：
+    // ai-service 真的跑起来了、/health 也通，但换一个时间点再连同一个端口，请求被
+    // 路由到了对方程序上，对方当然不认识我们的接口，表现成一头雾水的 405 Method
+    // Not Allowed。绑通配地址 0.0.0.0 探测是更保守可靠的判断——只要端口上已经有任何
+    // 监听者（不管对方绑的是具体地址还是通配地址、有没有开 SO_REUSEADDR），我们这个
+    // 全新 socket 尝试绑通配地址必然会失败，不会出现"看似绑定成功但路由其实不稳定"
+    // 这种两头都读不准的情况。
+    server.listen(preferred, '0.0.0.0')
   })
 }
 
@@ -400,7 +412,8 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
  * 拉起本地 FastAPI 后端(ai-service)。
  * - 开发模式：用 apps/ai-service/.venv 里的 python（README 里要求先建好这个 venv）
  * - Windows 打包模式：用内置的 python-win 运行时，数据库/生成产物存 userData 目录
- * - 端口优先用 8000，被占用时自动换一个空闲端口（见 findAvailablePort），
+ * - 端口优先用 47821（刻意避开 8000 这种极容易撞车的常见默认端口），被占用时
+ *   自动换一个空闲端口（见 findAvailablePort），
  *   实际端口通过 process.env.AI_SERVICE_PORT 传给 preload 里的 apiBaseUrl
  * - 子进程输出转发到 electron 的 stdout，方便看后端日志/报错
  */
@@ -442,12 +455,130 @@ function stopAiService(): void {
   }
 }
 
+// build/ 只是 electron-builder 打包时自己用的图标输入源（给 win.icon/mac.icon 用来
+// 生成安装包/exe 本身的图标），不在 files/extraResources 范围内，不会被打包进最终
+// 产物——打包后 __dirname 指向 asar 包内部，'../../build/icon.png' 这条相对路径
+// 在生产环境下根本不存在，BrowserWindow 的 icon 就悄悄地什么都没设上(临时任务栏/
+// 标题栏图标退化成 Electron 默认图标，桌面快捷方式图标不受影响，那个是 win.icon
+// 在打包时直接烧进 exe 资源的，两码事)。所以额外把这一个文件通过 extraResources
+// 复制到 resources/icon.png，打包后从 process.resourcesPath 读，开发模式还是读
+// 仓库里的 build/icon.png。
+function resolveWindowIconPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(__dirname, '../../build/icon.png')
+}
+
+// Electron 不设置应用菜单时会用内置的默认菜单(File/Edit/View/Window/Help，全英文，
+// 里面还带一些这个项目用不上的条目比如 Speech/Services)。这里换成中文，并且把
+// "检查更新"、"访问 GitHub 仓库"这两个已经在设置页里有的能力也搬到帮助菜单里，
+// 方便用鼠标点菜单栏就能找到，不用非得先翻到设置页。View/Window 底下留的都是
+// Electron 自带的标准 role(reload/toggleDevTools/minimize/close 等)，没有另外
+// 实现一遍逻辑。
+// package.json 里 productName 才是"AI视频工作台"这个给用户看的名字——app.name 这时候
+// 读到的是上面 app.setName() 定死的 'ai-manju-mvp'(文件系统安全考虑用的内部名字，
+// 不是要给用户看的)，菜单文字直接用这个常量，不要拿 app.name 拼。
+const APP_DISPLAY_NAME = 'AI视频工作台'
+
+function buildAppMenu(): Menu {
+  const isMac = process.platform === 'darwin'
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? ([
+          {
+            label: APP_DISPLAY_NAME,
+            submenu: [
+              { role: 'about', label: `关于 ${APP_DISPLAY_NAME}` },
+              { type: 'separator' },
+              { role: 'services', label: '服务' },
+              { type: 'separator' },
+              { role: 'hide', label: `隐藏 ${APP_DISPLAY_NAME}` },
+              { role: 'hideOthers', label: '隐藏其他' },
+              { role: 'unhide', label: '全部显示' },
+              { type: 'separator' },
+              { role: 'quit', label: `退出 ${APP_DISPLAY_NAME}` }
+            ]
+          }
+        ] as Electron.MenuItemConstructorOptions[])
+      : []),
+    {
+      label: '文件',
+      submenu: [isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' }]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' }
+      ]
+    },
+    {
+      label: '视图',
+      submenu: [
+        { role: 'reload', label: '重新加载' },
+        { role: 'forceReload', label: '强制重新加载' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '实际大小' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '切换全屏' }
+      ]
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        ...(isMac ? [{ role: 'zoom', label: '缩放' } as Electron.MenuItemConstructorOptions] : []),
+        { role: 'close', label: '关闭' }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '检查更新',
+          click: () => checkForAppUpdate(true)
+        },
+        {
+          label: '访问 GitHub 仓库',
+          click: () => shell.openExternal('https://github.com/zhaosay/doubao')
+        },
+        { type: 'separator' },
+        ...(isMac
+          ? []
+          : ([
+              {
+                label: `关于 ${APP_DISPLAY_NAME}`,
+                click: () =>
+                  dialog.showMessageBox({
+                    type: 'info',
+                    title: `关于 ${APP_DISPLAY_NAME}`,
+                    message: APP_DISPLAY_NAME,
+                    detail: `版本 ${app.getVersion()}`
+                  })
+              }
+            ] as Electron.MenuItemConstructorOptions[]))
+      ]
+    }
+  ]
+
+  return Menu.buildFromTemplate(template)
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     show: false,
-    icon: join(__dirname, '../../build/icon.png'),
+    icon: resolveWindowIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -575,6 +706,7 @@ ipcMain.handle('app-update-open-release', async () => {
 })
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(buildAppMenu())
   setupAutoUpdater()
   // 端口选定这一步只是"能不能 listen 一下"，跟真正拉起 Python venv/后端比起来是
   // 毫秒级的，不会重新引入下面这条注释说的"白屏等待"问题——所以放在 createWindow()
@@ -582,7 +714,12 @@ app.whenReady().then(async () => {
   // 是同步的，一旦渲染进程已经起来了再改这个环境变量就晚了。
   AI_SERVICE_PORT = await findAvailablePort(AI_SERVICE_PORT)
   process.env.AI_SERVICE_PORT = String(AI_SERVICE_PORT)
-  console.log(`[ai-service] 使用端口 ${AI_SERVICE_PORT}${AI_SERVICE_PORT === 8000 ? '' : '（8000 被占用，已自动换端口）'}`)
+  console.log(
+    `[ai-service] 使用端口 ${AI_SERVICE_PORT}` +
+      (AI_SERVICE_PORT === PREFERRED_AI_SERVICE_PORT
+        ? ''
+        : `（默认端口 ${PREFERRED_AI_SERVICE_PORT} 被占用，已自动换端口）`)
+  )
 
   const win = createWindow()
   // macOS 首次启动打包版时可能需要创建 Python 虚拟环境，先显示窗口再准备后端，避免白屏等待。
