@@ -2,6 +2,7 @@ import { ChildProcess, spawn, spawnSync } from 'child_process'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'fs'
+import { createServer } from 'net'
 import { homedir } from 'os'
 import { delimiter, dirname, extname, join } from 'path'
 
@@ -11,8 +12,34 @@ import { delimiter, dirname, extname, join } from 'path'
 // 稳定可预期，不用赌 Electron 对 scoped 包名的兜底行为。
 app.setName('ai-manju-mvp')
 
-const AI_SERVICE_PORT = 8000
+// 端口不再死锁 8000——用户反馈过这台机器上另一个自己的项目（机械臂控制台）也用
+// 8000，两个程序抢端口时后者会直接绑定失败，ai-service 起不来，渲染进程那边看到的
+// 是一头雾水的连接失败/500。8000 大概率还是空的，优先试它（不用每次都随机换端口
+// 增加排查成本），被占用了就退回让操作系统分配一个当前空闲的端口。选定的结果会在
+// createWindow() 之前写进 process.env，preload 里的 apiBaseUrl 就能读到真实端口，
+// 不需要额外一轮 IPC 往返。
+let AI_SERVICE_PORT = 8000
 const RELEASES_URL = 'https://github.com/zhaosay/doubao/releases/latest'
+
+function findAvailablePort(preferred: number): Promise<number> {
+  return new Promise((resolve) => {
+    const server = createServer()
+    server.once('error', () => {
+      // preferred 端口被占用（不管是别的程序还是上一次没退干净的残留进程），交给
+      // 操作系统在 127.0.0.1 上挑一个当前空闲的端口（listen(0) 的标准用法）。
+      const fallback = createServer()
+      fallback.once('error', () => resolve(preferred)) // 极端情况下退回原值，行为跟以前一样
+      fallback.listen(0, '127.0.0.1', () => {
+        const port = (fallback.address() as { port: number }).port
+        fallback.close(() => resolve(port))
+      })
+    })
+    server.once('listening', () => {
+      server.close(() => resolve(preferred))
+    })
+    server.listen(preferred, '127.0.0.1')
+  })
+}
 
 let aiServiceProcess: ChildProcess | null = null
 let updaterReady = false
@@ -373,7 +400,8 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
  * 拉起本地 FastAPI 后端(ai-service)。
  * - 开发模式：用 apps/ai-service/.venv 里的 python（README 里要求先建好这个 venv）
  * - Windows 打包模式：用内置的 python-win 运行时，数据库/生成产物存 userData 目录
- * - 端口固定 8000，和 renderer 里写死的 apiBaseUrl 对应
+ * - 端口优先用 8000，被占用时自动换一个空闲端口（见 findAvailablePort），
+ *   实际端口通过 process.env.AI_SERVICE_PORT 传给 preload 里的 apiBaseUrl
  * - 子进程输出转发到 electron 的 stdout，方便看后端日志/报错
  */
 function startAiService(): void {
@@ -546,8 +574,16 @@ ipcMain.handle('app-update-open-release', async () => {
   return true
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   setupAutoUpdater()
+  // 端口选定这一步只是"能不能 listen 一下"，跟真正拉起 Python venv/后端比起来是
+  // 毫秒级的，不会重新引入下面这条注释说的"白屏等待"问题——所以放在 createWindow()
+  // 之前 await 也没关系，但必须在 createWindow() 之前完成：preload 读 process.env
+  // 是同步的，一旦渲染进程已经起来了再改这个环境变量就晚了。
+  AI_SERVICE_PORT = await findAvailablePort(AI_SERVICE_PORT)
+  process.env.AI_SERVICE_PORT = String(AI_SERVICE_PORT)
+  console.log(`[ai-service] 使用端口 ${AI_SERVICE_PORT}${AI_SERVICE_PORT === 8000 ? '' : '（8000 被占用，已自动换端口）'}`)
+
   const win = createWindow()
   // macOS 首次启动打包版时可能需要创建 Python 虚拟环境，先显示窗口再准备后端，避免白屏等待。
   setTimeout(startAiService, 200)
