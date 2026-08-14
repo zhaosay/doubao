@@ -24,6 +24,13 @@ from pathlib import Path
 
 import requests
 
+# Windows 上 claude 是 npm 装的 .cmd shim（不是原生 PE 可执行文件），subprocess.run
+# 不带 shell=True 直接传 [command, ...] 列表调用会走 CreateProcess 硬调用那个文件，
+# 拿到 WinError 193 "%1 不是有效的 Win32 应用程序"——.cmd/.bat 必须交给 cmd.exe 解释
+# 执行，不能像 macOS/Linux 上的原生可执行文件/带 shebang 脚本那样直接跑。这三处调用
+# 都要带上这个开关：mac 上开发/测试时用的是真身可执行文件，没暴露过这个问题。
+_IS_WINDOWS = platform.system() == "Windows"
+
 CLAUDE_TIMEOUT_SEC = 300
 # claude CLI / 第三方 API 偶尔会超时/输出被截断/吐出非 JSON 内容（不是脚本内容本身有
 # 问题，是这次调用运气不好），这些情况重跑一次往往就好了；跟 ark_client.py 的重试思路
@@ -131,6 +138,7 @@ def _npm_global_prefix() -> Path | None:
             capture_output=True,
             text=True,
             timeout=10,
+            shell=_IS_WINDOWS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -168,7 +176,11 @@ def _shim_target(path: str) -> str | None:
         return None
     target = match.group(1)
     shim_dir = str(Path(path).resolve().parent)
-    target = re.sub(r"%~dp0", shim_dir + os.sep, target, flags=re.IGNORECASE)
+    # 传函数当 repl，而不是直接传 shim_dir 字符串：re.sub 会把字符串形式的 repl 当模板解析，
+    # 反斜杠+字母会被当成转义序列(比如 Windows 上几乎所有用户目录都是 C:\Users\...，
+    # 这里的 \U 会被解析成非法转义)，导致 re.error: bad escape \U——传函数则原样使用返回值，
+    # 不会做任何转义解析，能正确处理任意 Windows 路径。
+    target = re.sub(r"%~dp0", lambda _m: shim_dir + os.sep, target, flags=re.IGNORECASE)
     return target
 
 
@@ -335,6 +347,7 @@ def _call_claude_cli(prompt: str, cli_path_override: str | None = None) -> str:
             text=True,
             encoding="utf-8",
             timeout=CLAUDE_TIMEOUT_SEC,
+            shell=_IS_WINDOWS,
         )
     except subprocess.TimeoutExpired as exc:
         raise StoryGenerationError(f"claude CLI 超过 {CLAUDE_TIMEOUT_SEC} 秒没有返回") from exc
@@ -592,6 +605,7 @@ def test_claude_cli(cli_path_override: str | None = None, timeout_sec: int = TES
             text=True,
             encoding="utf-8",
             timeout=timeout_sec,
+            shell=_IS_WINDOWS,
         )
     except subprocess.TimeoutExpired:
         return False, f"claude CLI 超过 {timeout_sec} 秒没有返回，可能是没登录/网络问题，也可能只是这次比较慢"
