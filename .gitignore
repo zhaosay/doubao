@@ -41,3 +41,5 @@ release/
 # 本机 macOS 签名/公证打包配置和产物，不提交
 打包配置.sh
 local-release/
+
+web-dist/

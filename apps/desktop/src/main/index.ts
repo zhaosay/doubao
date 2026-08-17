@@ -20,7 +20,8 @@ app.setName('ai-manju-mvp')
 // 不需要额外一轮 IPC 往返。
 const PREFERRED_AI_SERVICE_PORT = 47821
 let AI_SERVICE_PORT = PREFERRED_AI_SERVICE_PORT
-const RELEASES_URL = 'https://github.com/zhaosay/doubao/releases/latest'
+const DOWNLOAD_PAGE_URL = 'https://api.yesgangnam.com/aivideo/'
+const UPDATE_FEED_URL = DOWNLOAD_PAGE_URL
 
 function findAvailablePort(preferred: number): Promise<number> {
   return new Promise((resolve) => {
@@ -74,12 +75,12 @@ let appUpdateStatus: AppUpdateStatus = {
   currentVersion: app.getVersion(),
   packaged: app.isPackaged,
   state: 'idle',
-  message: app.isPackaged ? '启动后会自动检查 GitHub Release 更新' : '开发模式不支持自动更新'
+  message: app.isPackaged ? '启动后会自动检查官网下载页更新' : '开发模式不支持自动更新'
 }
 
 function getUpdateErrorMessage(action: string, err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err)
-  return `${action}失败：${detail}。请打开 Release 手动下载。`
+  return `${action}失败：${detail}。请打开下载页手动下载。`
 }
 
 function broadcastUpdateStatus(): void {
@@ -98,14 +99,12 @@ function setupAutoUpdater(): void {
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.setFeedURL({
-    provider: 'github',
-    owner: 'zhaosay',
-    repo: 'doubao',
-    releaseType: 'release'
+    provider: 'generic',
+    url: UPDATE_FEED_URL
   })
 
   autoUpdater.on('checking-for-update', () => {
-    setUpdateStatus({ state: 'checking', message: '正在检查 GitHub Release...' })
+    setUpdateStatus({ state: 'checking', message: '正在检查官网下载页...' })
   })
   autoUpdater.on('update-available', (info) => {
     updateDownloaded = false
@@ -182,7 +181,7 @@ async function checkForAppUpdate(manual = false): Promise<AppUpdateStatus> {
   if (!updaterReady) setupAutoUpdater()
 
   updateCheckRunning = true
-  if (manual) setUpdateStatus({ state: 'checking', message: '正在检查 GitHub Release...' })
+  if (manual) setUpdateStatus({ state: 'checking', message: '正在检查官网下载页...' })
   try {
     await autoUpdater.checkForUpdates()
     return appUpdateStatus
@@ -473,7 +472,7 @@ function resolveWindowIconPath(): string {
 
 // Electron 不设置应用菜单时会用内置的默认菜单(File/Edit/View/Window/Help，全英文，
 // 里面还带一些这个项目用不上的条目比如 Speech/Services)。这里换成中文，并且把
-// "检查更新"、"访问 GitHub 仓库"这两个已经在设置页里有的能力也搬到帮助菜单里，
+// "检查更新"、"打开下载页"这两个已经在设置页里有的能力也搬到帮助菜单里，
 // 方便用鼠标点菜单栏就能找到，不用非得先翻到设置页。View/Window 底下留的都是
 // Electron 自带的标准 role(reload/toggleDevTools/minimize/close 等)，没有另外
 // 实现一遍逻辑。
@@ -550,8 +549,8 @@ function buildAppMenu(): Menu {
           click: () => checkForAppUpdate(true)
         },
         {
-          label: '访问 GitHub 仓库',
-          click: () => shell.openExternal('https://github.com/zhaosay/doubao')
+          label: '打开下载页',
+          click: () => shell.openExternal(DOWNLOAD_PAGE_URL)
         },
         { type: 'separator' },
         ...(isMac
@@ -715,7 +714,7 @@ ipcMain.handle('app-update-install', async () => {
 })
 
 ipcMain.handle('app-update-open-release', async () => {
-  await shell.openExternal(RELEASES_URL)
+  await shell.openExternal(DOWNLOAD_PAGE_URL)
   return true
 })
 

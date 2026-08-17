@@ -2827,7 +2827,7 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'about'">
       <section class="settings-group settings-group-update">
-      <div class="settings-group-head"><div><h2>版本更新</h2><p>检查 GitHub Release 并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
+      <div class="settings-group-head"><div><h2>版本更新</h2><p>从官网下载页检查并安装新版</p></div><span>{{ updateStatus.currentVersion }}</span></div>
       <div class="update-card">
         <div>
           <strong>{{ updateStatus.message }}</strong>
@@ -2839,14 +2839,14 @@ function statusLabel(status: string): string {
             <span :style="{ width: `${Math.max(0, Math.min(100, updateStatus.percent ?? 0))}%` }"></span>
           </div>
           <p v-if="updateStatus.state === 'error'" class="field-help">
-            如果自动更新失败，请打开 Release 手动下载。
+            如果自动更新失败，请打开下载页手动下载。
           </p>
         </div>
         <div class="update-actions">
           <button :disabled="updateActionDisabled" @click="runUpdatePrimaryAction">
             {{ updatePrimaryActionLabel }}
           </button>
-          <button class="ghost" @click="openLatestRelease">打开 Release</button>
+          <button class="ghost" @click="openLatestRelease">打开下载页</button>
         </div>
       </div>
       </section>

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI视频工作台下载</title>
+    <meta name="description" content="下载 AI视频工作台 Windows 和 macOS 安装包。" />
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1f2a26;
+        --muted: #6b756f;
+        --line: rgba(31, 42, 38, 0.14);
+        --paper: rgba(255, 252, 244, 0.82);
+        --leaf: #156f5b;
+        --leaf-2: #0d4d47;
+        --gold: #d79828;
+        --clay: #f0693f;
+        --bg: #f7f0dd;
+        font-family: "Songti SC", "Noto Serif CJK SC", "Microsoft YaHei", serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 10% 12%, rgba(240, 105, 63, 0.22), transparent 30rem),
+          radial-gradient(circle at 90% 2%, rgba(21, 111, 91, 0.18), transparent 28rem),
+          linear-gradient(135deg, #fff8e7 0%, var(--bg) 48%, #edf3e9 100%);
+      }
+
+      .shell {
+        width: min(1120px, calc(100% - 36px));
+        margin: 0 auto;
+        padding: 56px 0 38px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+        gap: 28px;
+        align-items: stretch;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--paper);
+        border-radius: 30px;
+        box-shadow: 0 24px 80px rgba(39, 45, 38, 0.13);
+        backdrop-filter: blur(18px);
+      }
+
+      .intro { padding: 42px; position: relative; overflow: hidden; }
+      .intro::after {
+        content: "";
+        position: absolute;
+        right: -80px;
+        bottom: -110px;
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        border: 38px solid rgba(215, 152, 40, 0.16);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 7px 12px;
+        border: 1px solid rgba(21, 111, 91, 0.2);
+        border-radius: 999px;
+        color: var(--leaf-2);
+        background: rgba(255, 255, 255, 0.46);
+        font: 700 13px/1.2 "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      h1 {
+        margin: 24px 0 14px;
+        font-size: clamp(42px, 7vw, 82px);
+        line-height: 0.94;
+        letter-spacing: -0.05em;
+      }
+
+      .lead {
+        position: relative;
+        z-index: 1;
+        max-width: 640px;
+        color: var(--muted);
+        font: 500 18px/1.8 "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      .downloads {
+        padding: 28px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .download-card {
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.52);
+      }
+
+      .download-card h2 {
+        margin: 0 0 8px;
+        font-size: 22px;
+      }
+
+      .download-card p, .meta, footer {
+        color: var(--muted);
+        font: 500 14px/1.7 "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 16px;
+        border-radius: 14px;
+        text-decoration: none;
+        font: 800 14px/1 "PingFang SC", "Microsoft YaHei", sans-serif;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+      }
+      .button:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(21, 111, 91, 0.18); }
+      .primary { color: #fff; background: linear-gradient(135deg, var(--leaf), var(--leaf-2)); }
+      .secondary { color: var(--leaf-2); border: 1px solid rgba(21, 111, 91, 0.22); background: #fff; }
+      .disabled { pointer-events: none; color: #8d948f; background: #ece7dc; }
+
+      .notes {
+        margin-top: 24px;
+        padding: 22px 26px;
+      }
+      .notes strong { color: var(--leaf-2); }
+      footer { margin-top: 22px; text-align: center; }
+
+      @media (max-width: 820px) {
+        .shell { width: min(100% - 24px, 560px); padding-top: 28px; }
+        .hero { grid-template-columns: 1fr; }
+        .intro { padding: 30px 24px; }
+        .downloads { padding: 18px; }
+        h1 { font-size: 46px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="panel intro">
+          <span class="eyebrow">AI Video Studio · 官方下载</span>
+          <h1>AI视频工作台</h1>
+          <p class="lead">下载安装包，打开后可在设置页直接检查更新。应用内更新也会从这个页面所在目录读取最新版文件。</p>
+        </div>
+
+        <div class="panel downloads">
+          <article class="download-card">
+            <h2>Windows</h2>
+            <p>适合 Windows 10/11，推荐下载安装版。</p>
+            <div class="meta" id="win-meta">正在读取最新版本...</div>
+            <div class="actions">
+              <a class="button primary disabled" id="win-exe" href="#">下载 Windows 安装包</a>
+              <a class="button secondary disabled" id="win-zip" href="#">备用 zip</a>
+            </div>
+          </article>
+
+          <article class="download-card">
+            <h2>macOS</h2>
+            <p>Universal 版本，同时兼容 Intel 芯片和 Apple Silicon。</p>
+            <div class="meta" id="mac-meta">正在读取最新版本...</div>
+            <div class="actions">
+              <a class="button primary disabled" id="mac-dmg" href="#">下载 macOS DMG</a>
+              <a class="button secondary disabled" id="mac-zip" href="#">备用 zip</a>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel notes">
+        <strong>更新文件需要放在同一个目录：</strong>
+        Windows 自动更新读取 <code>latest.yml</code>，macOS 自动更新读取 <code>latest-mac.yml</code>。安装包、blockmap 和 yml 文件都放到 <code>/aivideo/</code> 下即可。
+      </section>
+      <footer>© AI视频工作台</footer>
+    </main>
+
+    <script>
+      const text = (id, value) => { document.getElementById(id).textContent = value }
+      const enable = (id, href) => {
+        const el = document.getElementById(id)
+        el.href = href
+        el.classList.remove('disabled')
+      }
+      const parseValue = (yaml, key) => {
+        const match = yaml.match(new RegExp(`(?:^|\\n)${key}:\\s*['\"]?([^'\"\\n]+)`, 'm'))
+        return match ? match[1].trim() : ''
+      }
+
+      async function loadWindows() {
+        try {
+          const res = await fetch('latest.yml', { cache: 'no-store' })
+          if (!res.ok) throw new Error('latest.yml not found')
+          const yaml = await res.text()
+          const version = parseValue(yaml, 'version')
+          const path = parseValue(yaml, 'path') || `AI-Manju-Setup-${version}.exe`
+          text('win-meta', version ? `最新版本：${version}` : '已找到 Windows 安装包')
+          enable('win-exe', path)
+          if (version) enable('win-zip', `AI-Manju-${version}-x64.zip`)
+        } catch (error) {
+          text('win-meta', '暂未上传 Windows 安装包')
+        }
+      }
+
+      async function loadMac() {
+        try {
+          const res = await fetch('latest-mac.yml', { cache: 'no-store' })
+          if (!res.ok) throw new Error('latest-mac.yml not found')
+          const yaml = await res.text()
+          const version = parseValue(yaml, 'version')
+          text('mac-meta', version ? `最新版本：${version}` : '已找到 macOS 安装包')
+          if (version) {
+            enable('mac-dmg', `AI-Manju-${version}-universal.dmg`)
+            enable('mac-zip', `AI-Manju-${version}-universal.zip`)
+          }
+        } catch (error) {
+          text('mac-meta', '暂未上传 macOS 安装包')
+        }
+      }
+
+      loadWindows()
+      loadMac()
+    </script>
+  </body>
+</html>

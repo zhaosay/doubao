@@ -1,6 +1,6 @@
 {
   "name": "@ai-manju/desktop",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
@@ -108,9 +108,8 @@
     },
     "publish": [
       {
-        "provider": "github",
-        "owner": "zhaosay",
-        "repo": "doubao"
+        "provider": "generic",
+        "url": "https://api.yesgangnam.com/aivideo/"
       }
     ],
     "afterSign": "notarize.js"

@@ -1,7 +1,7 @@
 {
   "name": "ai-manju-mvp",
   "private": true,
-  "version": "1.0.25",
+  "version": "1.0.26",
   "workspaces": [
     "apps/desktop",
     "packages/*"
@@ -9,7 +9,8 @@
   "scripts": {
     "dev:desktop": "npm run dev --workspace=apps/desktop",
     "prisma:generate": "npm run prisma:generate --workspace=apps/desktop",
-    "prisma:migrate": "npm run prisma:migrate --workspace=apps/desktop"
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/desktop",
+    "prepare:aivideo-download": "node scripts/prepare-aivideo-download.mjs"
   },
   "allowScripts": {
     "electron@31.7.7": true,
