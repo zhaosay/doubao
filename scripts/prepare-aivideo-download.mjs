@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
@@ -35,6 +36,26 @@ function copyIfExists(name) {
   return 1
 }
 
+function sha512Base64(file) {
+  return createHash('sha512').update(readFileSync(file)).digest('base64')
+}
+
+function syncMacDmgMetadata(version) {
+  const dmgName = version ? `AI-Manju-${version}-universal.dmg` : ''
+  const dmgPath = join(sourceDir, dmgName)
+  const latestMacPath = join(outputDir, 'latest-mac.yml')
+  if (!version || !existsSync(dmgPath) || !existsSync(latestMacPath)) return
+
+  // DMG 会在 Apple 公证和 staple 后变化；这里把网页目录里的校验信息同步到最终 DMG。
+  const sha512 = sha512Base64(dmgPath)
+  const size = statSync(dmgPath).size
+  const updated = readFileSync(latestMacPath, 'utf8').replace(
+    new RegExp(`(  - url: AI-Manju-${version}-universal\\.dmg\\n    sha512: )([^\\n]+)(\\n    size: )([^\\n]+)`),
+    `$1${sha512}$3${size}`
+  )
+  writeFileSync(latestMacPath, updated)
+}
+
 if (!existsSync(sourceDir)) {
   throw new Error(`找不到产物目录：${sourceDir}`)
 }
@@ -69,6 +90,7 @@ for (const name of [
 ]) {
   copied += copyIfExists(name)
 }
+syncMacDmgMetadata(macVersion)
 
 console.log(`已生成 ${outputDir}`)
 console.log(`共复制 ${copied} 个文件；把这个目录里的内容上传到 https://api.yesgangnam.com/aivideo/`)
