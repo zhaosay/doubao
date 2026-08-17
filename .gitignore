@@ -37,3 +37,7 @@ apps/ai-service/**/__pycache__/
 
 # 本地下载的发布安装包，不提交到仓库
 release/
+
+# 本机 macOS 签名/公证打包配置和产物，不提交
+打包配置.sh
+local-release/

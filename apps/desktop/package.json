@@ -1,6 +1,6 @@
 {
   "name": "@ai-manju/desktop",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
@@ -103,7 +103,8 @@
         }
       ],
       "artifactName": "AI-Manju-${version}-${arch}.${ext}",
-      "identity": null
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     },
     "publish": [
       {
@@ -111,6 +112,7 @@
         "owner": "zhaosay",
         "repo": "doubao"
       }
-    ]
+    ],
+    "afterSign": "notarize.js"
   }
 }
