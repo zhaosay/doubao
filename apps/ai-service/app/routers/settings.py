@@ -14,6 +14,7 @@ from app.services.story_generator import detect_claude_cli, test_anthropic_api, 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 StoryGenProvider = Literal["claude_cli", "api"]
+VideoGenProvider = Literal["seedance", "minimax"]
 
 # 跟 story_generator.py 的 STYLE_HINTS/CONTENT_TYPE_HINTS、seedream.py 的 STYLE_PREFIXES
 # 用同一套 key，设置页存的自定义值是"按 key 覆盖"，不是整份替换，所以这里要知道
@@ -31,6 +32,10 @@ class UpdateSettingsBody(BaseModel):
     # 留空 = 不走 Ark，这个功能自动回退到 storyGenProvider(claude_cli/api)。
     arkTextModel: Optional[str] = None
     indexTtsBaseUrl: Optional[str] = None
+    # 分镜/图生视频用哪个 provider：seedance(默认) | minimax。切到 minimax 时要求
+    # minimaxApiKey 必填，校验逻辑见 update_settings 里的 video_provider 分支。
+    videoProvider: Optional[VideoGenProvider] = None
+    minimaxApiKey: Optional[str] = None
     # 目录设置：留空字符串表示"清空自定义值，恢复默认目录"，跟 None(不修改这个字段)是两回事，
     # 所以下面统一用「传了空字符串就存 None」而不是「空字符串当成没传」。
     outputDir: Optional[str] = None
@@ -254,6 +259,9 @@ def read_settings():
         "storyGenApiModel": s.get("storyGenApiModel"),
         "storyGenApiMaxTokens": s.get("storyGenApiMaxTokens", 4096),
         "storyGenCliPath": s.get("storyGenCliPath"),
+        "videoProvider": s.get("videoProvider") or "seedance",
+        "minimaxApiKey": _mask(s.get("minimaxApiKey")),
+        "minimaxApiKeySet": bool(s.get("minimaxApiKey")),
     }
 
 
@@ -282,6 +290,12 @@ def update_settings(body: UpdateSettingsBody):
         indextts_base_url = (
             body.indexTtsBaseUrl if body.indexTtsBaseUrl is not None else current.get("indexTtsBaseUrl")
         )
+        video_provider = body.videoProvider if body.videoProvider is not None else current.get("videoProvider", "seedance")
+        minimax_api_key = body.minimaxApiKey if body.minimaxApiKey is not None else current.get("minimaxApiKey")
+        # 切到 minimax 就必须填了 API Key，不然存进去一个"选了 minimax 但没配置 key"的
+        # 半吊子状态，等到真正生成视频那一刻才报错，跟 storyGenProvider=api 的校验是同一个思路。
+        if video_provider == "minimax" and not (minimax_api_key or "").strip():
+            raise HTTPException(400, "选了 MiniMax 生成视频，还差 API Key 没填")
         output_dir = (
             _validate_dir("目录设置", body.outputDir) if body.outputDir is not None else current.get("outputDir")
         )
@@ -381,8 +395,8 @@ def update_settings(body: UpdateSettingsBody):
                 "exportBgmVolume, exportUseBgm, "
                 "customStylePrefixes, customStyleHints, customContentTypeHints, customProjectTemplates, "
                 "posterFontPath, storyGenProvider, storyGenApiBaseUrl, storyGenApiKey, storyGenApiModel, "
-                "storyGenApiMaxTokens, storyGenCliPath, updatedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "storyGenApiMaxTokens, storyGenCliPath, videoProvider, minimaxApiKey, updatedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "singleton",
                     ark_api_key,
@@ -408,6 +422,8 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_model,
                     story_gen_api_max_tokens,
                     story_gen_cli_path,
+                    video_provider,
+                    minimax_api_key,
                     now,
                 ),
             )
@@ -420,7 +436,7 @@ def update_settings(body: UpdateSettingsBody):
                 "customStylePrefixes = ?, customStyleHints = ?, customContentTypeHints = ?, "
                 "customProjectTemplates = ?, posterFontPath = ?, storyGenProvider = ?, "
                 'storyGenApiBaseUrl = ?, storyGenApiKey = ?, storyGenApiModel = ?, storyGenApiMaxTokens = ?, '
-                'storyGenCliPath = ?, updatedAt = ? WHERE id = ?',
+                'storyGenCliPath = ?, videoProvider = ?, minimaxApiKey = ?, updatedAt = ? WHERE id = ?',
                 (
                     ark_api_key,
                     ark_base_url,
@@ -445,6 +461,8 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_model,
                     story_gen_api_max_tokens,
                     story_gen_cli_path,
+                    video_provider,
+                    minimax_api_key,
                     now,
                     "singleton",
                 ),

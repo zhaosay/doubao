@@ -360,6 +360,9 @@ interface CharacterRef {
   storyId: string
   name: string
   prompt: string | null
+  // 角色设定：身份/性格/背景等叙事性描述，跟 prompt(外观描述，喂给生成设定图用)分开
+  // 管理，纯粹给创作者自己记录/参考，不影响任何生成调用。
+  profile: string | null
   status: 'pending' | 'running' | 'completed' | 'failed'
   refImagePath: string | null
   url: string | null
@@ -425,6 +428,10 @@ const settingsForm = reactive({
   arkImageModel: '',
   arkVideoModel: '',
   arkTextModel: '',
+  // 分镜/图生视频用哪个视频生成 provider：seedance(默认，火山方舟) | minimax(MiniMax H3)，
+  // 全局唯一一份设置，跟 storyGenForm.provider 是同一个"tab 选一种方式"的模式。
+  videoProvider: 'seedance' as 'seedance' | 'minimax',
+  minimaxApiKey: '',
   indexTtsBaseUrl: '',
   // 目录设置：留空 = 用默认目录（<项目根目录>/output）
   outputDir: '',
@@ -440,7 +447,12 @@ const settingsForm = reactive({
   // 留空 = 自动按操作系统猜系统字体，猜不到生成海报时会报错，报错里会提示回这里填。
   posterFontPath: ''
 })
-const settingsInfo = reactive({ arkApiKeySet: false, arkApiKeyMasked: '' })
+const settingsInfo = reactive({
+  arkApiKeySet: false,
+  arkApiKeyMasked: '',
+  minimaxApiKeySet: false,
+  minimaxApiKeyMasked: ''
+})
 const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
@@ -875,6 +887,9 @@ interface SettingsResponse {
   arkImageModel: string | null
   arkVideoModel: string | null
   arkTextModel: string | null
+  videoProvider: 'seedance' | 'minimax'
+  minimaxApiKey: string | null
+  minimaxApiKeySet: boolean
   indexTtsBaseUrl: string | null
   outputDir: string | null
   exportDir: string | null
@@ -904,6 +919,9 @@ async function loadSettings(): Promise<void> {
   settingsForm.arkImageModel = data.arkImageModel ?? ''
   settingsForm.arkVideoModel = data.arkVideoModel ?? ''
   settingsForm.arkTextModel = data.arkTextModel ?? ''
+  settingsForm.videoProvider = data.videoProvider ?? 'seedance'
+  settingsInfo.minimaxApiKeySet = data.minimaxApiKeySet
+  settingsInfo.minimaxApiKeyMasked = data.minimaxApiKey ?? ''
   settingsForm.indexTtsBaseUrl = data.indexTtsBaseUrl ?? ''
   settingsForm.outputDir = data.outputDir ?? ''
   settingsForm.exportDir = data.exportDir ?? ''
@@ -978,6 +996,7 @@ async function saveSettings(): Promise<void> {
       arkImageModel: settingsForm.arkImageModel,
       arkVideoModel: settingsForm.arkVideoModel,
       arkTextModel: settingsForm.arkTextModel,
+      videoProvider: settingsForm.videoProvider,
       outputDir: settingsForm.outputDir,
       exportDir: settingsForm.exportDir,
       exportBurnSubtitles: settingsForm.exportBurnSubtitles,
@@ -996,9 +1015,11 @@ async function saveSettings(): Promise<void> {
       storyGenApiMaxTokens: storyGenForm.apiMaxTokens
     }
     if (settingsForm.arkApiKey) body.arkApiKey = settingsForm.arkApiKey
+    if (settingsForm.minimaxApiKey) body.minimaxApiKey = settingsForm.minimaxApiKey
     if (storyGenForm.apiKey) body.storyGenApiKey = storyGenForm.apiKey
     await api('/settings', { method: 'PUT', body: JSON.stringify(body) })
     settingsForm.arkApiKey = ''
+    settingsForm.minimaxApiKey = ''
     storyGenForm.apiKey = ''
     settingsSavedAt.value = new Date().toLocaleTimeString()
     await loadSettings()
@@ -1573,6 +1594,10 @@ async function saveCharacterPrompt(c: CharacterRef): Promise<void> {
   await api(`/characters/${c.id}`, { method: 'PATCH', body: JSON.stringify({ prompt: c.prompt ?? '' }) })
 }
 
+async function saveCharacterProfile(c: CharacterRef): Promise<void> {
+  await api(`/characters/${c.id}`, { method: 'PATCH', body: JSON.stringify({ profile: c.profile ?? '' }) })
+}
+
 // ---- 角色跨项目复用：同一个角色没必要在每个新项目里重新调一次生成接口 ----
 interface CharacterSearchResult extends CharacterRef {
   projectId: string
@@ -1634,6 +1659,25 @@ async function generateStory(): Promise<void> {
   } finally {
     generatingStory.value = false
   }
+}
+
+// 总览模式"剧本一键生成"专用包装：重新生成剧本会覆盖场次/镜头文本，但角色库、
+// 场景参考图、已经生成的分镜图片/视频都不会跟着自动重新生成——剧本一变，这些很可能
+// 就对不上了，得用户自己决定要不要挑几个重来。已经有角色/场次的情况下先提醒一句，
+// 从零开始的新项目(什么都还没有)不用打扰。编辑模式里原有的"AI重新生成剧本"按钮
+// 维持老行为不受影响，这个提示只针对总览模式这个入口。
+async function generateStoryFromOverview(): Promise<void> {
+  if (!activeProject.value) return
+  const hasDownstream = characters.value.length > 0 || activeProject.value.scenes.length > 0
+  if (hasDownstream) {
+    const ok = window.confirm(
+      '重新生成剧本会覆盖当前的场次和分镜内容。角色库、场景参考图、已经生成的分镜图片/视频' +
+        '不会自动跟着重新生成——剧本变了之后这些很可能对不上，需要之后自己挑几个重新生成一遍。\n\n' +
+        '确定要重新生成剧本吗？'
+    )
+    if (!ok) return
+  }
+  await generateStory()
 }
 
 // ---- 手动加剧本 ----
@@ -1847,6 +1891,14 @@ function sceneLabelAt(offset: number): string {
 }
 
 function handleSceneKeydown(e: KeyboardEvent): void {
+  // 分镜查看器开着的时候优先拦截左右键/Esc 给查看器用（翻镜头/关闭），
+  // 不会同时触发下面的"切场次"逻辑。
+  if (shotViewer.open) {
+    if (e.key === 'ArrowLeft') viewerStep(-1)
+    else if (e.key === 'ArrowRight') viewerStep(1)
+    else if (e.key === 'Escape') closeShotViewer()
+    return
+  }
   if (activeSceneIndex.value === null) return
   // 光标在输入框/文本域里时不拦截左右键，不然打字时选区移动会被误当成"切场次"
   const target = e.target as HTMLElement | null
@@ -2362,6 +2414,45 @@ function jumpToShotEdit(sceneOrder: number, shotOrder: number): void {
   jumpToShot(sceneOrder, shotOrder)
 }
 
+// ---- 分镜大图查看器 ----
+// 总览模式里点一张分镜缩略图，之前是直接跳回编辑模式——用户反馈想要的是先能放大看看
+// 这一镜画面，顺手左右切到同一场次的其它镜头对比一下连贯性，看完确认没问题了才需要
+// 跳去编辑模式改文字/重新生成，不是每次点开都得先跳转。所以点缩略图改成打开这个查看器
+// (只存 sceneId/shotId，不存下标，切换场次数据时不会因为下标错位指向错的镜头)，
+// 底部胶片条能直接跳到本场任意一镜，"编辑这一镜"按钮才会真正跳回编辑模式。
+const shotViewer = reactive({ open: false, sceneId: '', shotId: '' })
+
+const viewerScene = computed(() => activeProject.value?.scenes.find((s) => s.id === shotViewer.sceneId) ?? null)
+const viewerShots = computed(() => viewerScene.value?.shots ?? [])
+const viewerIndex = computed(() => viewerShots.value.findIndex((s) => s.id === shotViewer.shotId))
+const viewerShot = computed(() => (viewerIndex.value >= 0 ? viewerShots.value[viewerIndex.value] : null))
+
+function openShotViewer(sceneId: string, shotId: string): void {
+  shotViewer.sceneId = sceneId
+  shotViewer.shotId = shotId
+  shotViewer.open = true
+}
+
+function closeShotViewer(): void {
+  shotViewer.open = false
+}
+
+function viewerStep(delta: number): void {
+  const shots = viewerShots.value
+  if (shots.length === 0) return
+  const next = viewerIndex.value + delta
+  if (next < 0 || next >= shots.length) return
+  shotViewer.shotId = shots[next].id
+}
+
+function editViewerShot(): void {
+  const scene = viewerScene.value
+  const shot = viewerShot.value
+  if (!scene || !shot) return
+  closeShotViewer()
+  jumpToShotEdit(scene.order + 1, shot.order + 1)
+}
+
 // 总览模式的 5 个"一键生成"批量按钮，各自独立触发，互不牵动。跟单项生成
 // (generateCharacter/generateAsset 等)共用同一套"点了先请求、请求完立刻刷新一次
 // 本地状态"模式——批量接口内部是后台线程跑，接口本身立刻返回 running，这里手动
@@ -2436,6 +2527,57 @@ const hasRunningWork = computed(() => {
   if (activeProject.value?.scenes.some((s) => s.status === 'running')) return true
   return Object.values(assetsByShot).some((assets) => assets.some((a) => a.status === 'running'))
 })
+
+// ---- 总览模式批量按钮的"真实运行中"状态 ----
+// batchRunning.xxx 只在"触发请求"这个网络往返期间是 true——批量接口本身立刻返回、
+// 真正的生成在后端线程里跑，可能持续几分钟，之前按钮文字在请求一返回就跳回原样，
+// 用户完全看不出后台是不是还在跑。这里改成额外看"实际数据里还有没有 running 状态"，
+// 按钮的禁用/文案 = 触发中 或者 数据里确实还有东西在跑，两种情况都要显示"生成中"，
+// 不能一返回就恢复成看起来"什么都没发生"的样子。
+const anyCharacterRunning = computed(() => characters.value.some((c) => c.status === 'running'))
+const anySceneRunning = computed(() => (activeProject.value?.scenes ?? []).some((s) => s.status === 'running'))
+
+function shotAssetProgress(kind: Asset['type']): { done: number; total: number; running: number } {
+  let total = 0
+  let done = 0
+  let running = 0
+  for (const scene of activeProject.value?.scenes ?? []) {
+    for (const shot of scene.shots) {
+      // 配音只统计有台词的镜头，跟后端 batch_generation.generate_all_shot_assets 的
+      // 过滤口径保持一致，不然"0/12"这种数字会让人以为大部分镜头都还没配音，
+      // 实际上很多镜头本来就没有台词、根本不需要配音。
+      if (kind === 'voice' && !shot.dialogue?.trim()) continue
+      total++
+      const status = assetOf(shot.id, kind)?.status
+      if (status === 'completed') done++
+      if (status === 'running') running++
+    }
+  }
+  return { done, total, running }
+}
+
+const imageProgress = computed(() => shotAssetProgress('image'))
+const videoProgress = computed(() => shotAssetProgress('video'))
+const voiceProgress = computed(() => shotAssetProgress('voice'))
+const characterProgress = computed(() => ({
+  done: characters.value.filter((c) => c.status === 'completed').length,
+  total: characters.value.length
+}))
+const sceneProgress = computed(() => ({
+  done: activeProject.value?.scenes.filter((s) => s.status === 'completed').length ?? 0,
+  total: activeProject.value?.scenes.length ?? 0
+}))
+
+function batchButtonLabel(
+  triggering: boolean,
+  running: boolean,
+  progress: { done: number; total: number } | null,
+  idleLabel: string
+): string {
+  if (triggering) return '触发中…'
+  if (running) return progress && progress.total > 0 ? `生成中…(${progress.done}/${progress.total})` : '生成中…'
+  return idleLabel
+}
 
 // ---- 项目详情页 step 步骤条 ----
 // 之前是"锚点跳转 + 长滚动页面"，四块内容一直全部渲染在同一条竖向长页面里，
@@ -2760,6 +2902,57 @@ function statusLabel(status: string): string {
         <input v-model="settingsForm.indexTtsBaseUrl" placeholder="http://localhost:7860" />
         <p class="field-help">不配置也能生成剧本、图片和视频。</p>
       </div>
+      </section>
+
+      <section class="settings-group">
+      <div class="settings-group-head">
+        <div><h2>视频生成 Provider</h2><p>分镜视频和图生视频用哪个模型出</p></div>
+        <span>可选</span>
+      </div>
+      <div class="field story-gen-provider-field">
+        <label>生成方式</label>
+        <div class="story-gen-provider-tabs" role="tablist" aria-label="视频生成方式">
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: settingsForm.videoProvider === 'seedance' }"
+            role="tab"
+            :aria-selected="settingsForm.videoProvider === 'seedance'"
+            @click="settingsForm.videoProvider = 'seedance'"
+          >
+            <strong>Seedance（火山方舟）</strong>
+            <span>用上面配置的 Ark API Key</span>
+          </button>
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: settingsForm.videoProvider === 'minimax' }"
+            role="tab"
+            :aria-selected="settingsForm.videoProvider === 'minimax'"
+            @click="settingsForm.videoProvider = 'minimax'"
+          >
+            <strong>MiniMax H3</strong>
+            <span>需要单独的 MiniMax API Key</span>
+          </button>
+        </div>
+      </div>
+      <template v-if="settingsForm.videoProvider === 'minimax'">
+        <div class="field">
+          <label>MiniMax API Key</label>
+          <input
+            v-model="settingsForm.minimaxApiKey"
+            type="password"
+            :placeholder="settingsInfo.minimaxApiKeySet ? `当前已设置：${settingsInfo.minimaxApiKeyMasked}` : '还没设置'"
+          />
+          <p class="field-help">
+            MiniMax 开放平台账号的 API Key，跟火山方舟是两个不同的账号体系，不能混用。
+          </p>
+        </div>
+        <p class="hint">
+          MiniMax H3 目前只支持图生视频、固定 4 秒，画面比例由模型按输入图自适应决定，
+          不能像 Seedance 那样精确对齐项目设置的比例。
+        </p>
+      </template>
       </section>
       </template>
 
@@ -3710,16 +3903,15 @@ function statusLabel(status: string): string {
       <template v-if="projectViewMode === 'overview'">
         <section class="overview-section">
           <div class="overview-section-head">
-            <h3>参考图一览</h3>
+            <h3>角色</h3>
             <div class="overview-section-actions">
-              <button class="ghost" :disabled="generatingStory" @click="generateStory">
-                {{ generatingStory ? '生成中…' : '剧本一键生成' }}
+              <button class="ghost" :disabled="generatingStory || activeProject.story?.status === 'running'" @click="generateStoryFromOverview">
+                <span v-if="generatingStory || activeProject.story?.status === 'running'" class="btn-spinner"></span>
+                {{ batchButtonLabel(generatingStory, activeProject.story?.status === 'running', null, '剧本一键生成') }}
               </button>
-              <button class="ghost" :disabled="batchRunning.characters" @click="generateAllCharacters">
-                {{ batchRunning.characters ? '触发中…' : '角色一键生成' }}
-              </button>
-              <button class="ghost" :disabled="batchRunning.scenes" @click="generateAllScenes">
-                {{ batchRunning.scenes ? '触发中…' : '场景参考图一键生成' }}
+              <button class="ghost" :disabled="batchRunning.characters || anyCharacterRunning" @click="generateAllCharacters">
+                <span v-if="batchRunning.characters || anyCharacterRunning" class="btn-spinner"></span>
+                {{ batchButtonLabel(batchRunning.characters, anyCharacterRunning, characterProgress, '角色一键生成') }}
               </button>
             </div>
           </div>
@@ -3727,7 +3919,6 @@ function statusLabel(status: string): string {
             还没有剧本，先用上面「剧本一键生成」或去编辑模式手动加剧本。
           </p>
           <template v-else>
-            <p class="overview-subhead">角色</p>
             <div class="overview-ref-grid">
               <button
                 v-for="c in characters"
@@ -3745,45 +3936,48 @@ function statusLabel(status: string): string {
               </button>
               <p v-if="characters.length === 0" class="hint">还没有角色，先生成剧本会自动解析出角色。</p>
             </div>
-            <p class="overview-subhead">场景</p>
-            <div class="overview-ref-grid">
-              <button
-                v-for="(scene, sIdx) in activeProject.scenes"
-                :key="scene.id"
-                type="button"
-                class="overview-ref-card"
-                @click="jumpToSceneEdit(sIdx)"
-              >
-                <span class="overview-ref-thumb" :class="statusColorClass(scene.status)">
-                  <img v-if="scene.url" :src="`${apiBaseUrl}${scene.url}`" />
-                  <i v-else class="overview-ref-placeholder">{{ scene.status === 'running' ? '…' : '景' }}</i>
-                  <span class="overview-ref-dot" :class="statusColorClass(scene.status)"></span>
-                </span>
-                <span class="overview-ref-label">第{{ scene.order + 1 }}场</span>
-              </button>
-            </div>
           </template>
         </section>
 
         <section class="overview-section">
           <div class="overview-section-head">
-            <h3>分镜一览</h3>
+            <h3>场次与分镜一览</h3>
             <div class="overview-section-actions">
-              <button class="ghost" :disabled="batchRunning.images" @click="generateAllShotImages">
-                {{ batchRunning.images ? '触发中…' : '分镜图片一键生成' }}
+              <button class="ghost" :disabled="batchRunning.scenes || anySceneRunning" @click="generateAllScenes">
+                <span v-if="batchRunning.scenes || anySceneRunning" class="btn-spinner"></span>
+                {{ batchButtonLabel(batchRunning.scenes, anySceneRunning, sceneProgress, '场景参考图一键生成') }}
+              </button>
+              <button class="ghost" :disabled="batchRunning.images || imageProgress.running > 0" @click="generateAllShotImages">
+                <span v-if="batchRunning.images || imageProgress.running > 0" class="btn-spinner"></span>
+                {{ batchButtonLabel(batchRunning.images, imageProgress.running > 0, imageProgress, '分镜图片一键生成') }}
               </button>
             </div>
           </div>
+          <p class="hint overview-hint">
+            每场戏的场景参考图和这场戏的所有分镜画面放在一起，方便一眼判断背景/光线是否连贯；
+            点分镜缩略图可以放大看、左右切到同场次其它镜头对比。
+          </p>
           <p v-if="activeProject.scenes.length === 0" class="hint">还没有分镜，先去生成/导入剧本。</p>
-          <div v-for="scene in activeProject.scenes" :key="scene.id">
-            <p class="overview-subhead">第{{ scene.order + 1 }}场</p>
+
+          <div v-for="(scene, sIdx) in activeProject.scenes" :key="scene.id" class="overview-scene-block">
+            <div class="overview-scene-head">
+              <button type="button" class="overview-scene-ref" @click="jumpToSceneEdit(sIdx)">
+                <span class="overview-ref-thumb" :class="statusColorClass(scene.status)">
+                  <img v-if="scene.url" :src="`${apiBaseUrl}${scene.url}`" />
+                  <i v-else class="overview-ref-placeholder">{{ scene.status === 'running' ? '…' : '景' }}</i>
+                  <span class="overview-ref-dot" :class="statusColorClass(scene.status)"></span>
+                </span>
+                <span class="overview-scene-title">第{{ scene.order + 1 }}场</span>
+              </button>
+              <p class="overview-scene-summary" :title="scene.summary">{{ scene.summary }}</p>
+            </div>
             <div class="overview-shot-grid">
               <button
                 v-for="shot in scene.shots"
                 :key="shot.id"
                 type="button"
                 class="overview-shot-card"
-                @click="jumpToShotEdit(scene.order + 1, shot.order + 1)"
+                @click="openShotViewer(scene.id, shot.id)"
               >
                 <span class="overview-shot-media" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">
                   <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" />
@@ -3798,20 +3992,61 @@ function statusLabel(status: string): string {
                     @click.stop="generateAsset(shot.id, 'image')"
                   >↻</button>
                 </span>
-                <span class="overview-shot-label">第{{ scene.order + 1 }}场·第{{ shot.order + 1 }}镜</span>
+                <span class="overview-shot-label">第{{ shot.order + 1 }}镜</span>
               </button>
             </div>
           </div>
           <div class="overview-cta-bar">
             <span>分镜图片都确认没问题了 →</span>
-            <button class="ghost accent" :disabled="batchRunning.videos" @click="generateAllShotVideos">
-              {{ batchRunning.videos ? '触发中…' : '分镜视频一键生成' }}
+            <button class="ghost accent" :disabled="batchRunning.videos || videoProgress.running > 0" @click="generateAllShotVideos">
+              <span v-if="batchRunning.videos || videoProgress.running > 0" class="btn-spinner"></span>
+              {{ batchButtonLabel(batchRunning.videos, videoProgress.running > 0, videoProgress, '分镜视频一键生成') }}
             </button>
-            <button class="ghost accent" :disabled="batchRunning.voices" @click="generateAllShotVoices">
-              {{ batchRunning.voices ? '触发中…' : '配音一键生成' }}
+            <button class="ghost accent" :disabled="batchRunning.voices || voiceProgress.running > 0" @click="generateAllShotVoices">
+              <span v-if="batchRunning.voices || voiceProgress.running > 0" class="btn-spinner"></span>
+              {{ batchButtonLabel(batchRunning.voices, voiceProgress.running > 0, voiceProgress, '配音一键生成') }}
             </button>
           </div>
         </section>
+
+        <!-- 分镜大图查看器：点分镜缩略图打开，不再直接跳编辑模式——先放大看这一镜画面，
+             左右切换/底部胶片条能对比同场次其它镜头是否连贯，确认没问题了再点"编辑这一镜"
+             真正跳过去改文字/重新生成。 -->
+        <div v-if="shotViewer.open" class="shot-viewer-overlay" @click.self="closeShotViewer">
+          <div class="shot-viewer-panel">
+            <div class="shot-viewer-head">
+              <span>第{{ (viewerScene?.order ?? 0) + 1 }}场 · {{ viewerScene?.summary }}</span>
+              <button type="button" class="ghost" @click="closeShotViewer">✕ 关闭</button>
+            </div>
+            <div class="shot-viewer-body">
+              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex <= 0" @click="viewerStep(-1)">‹</button>
+              <div class="shot-viewer-media" :class="statusColorClass(assetOf(viewerShot?.id ?? '', 'image')?.status)">
+                <img v-if="viewerShot && assetOf(viewerShot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(viewerShot.id, 'image')?.url}`" />
+                <i v-else class="overview-shot-placeholder">
+                  {{ viewerShot && assetOf(viewerShot.id, 'image')?.status === 'running' ? '生成中…' : '暂无画面' }}
+                </i>
+              </div>
+              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex >= viewerShots.length - 1" @click="viewerStep(1)">›</button>
+            </div>
+            <div class="shot-viewer-meta">
+              <span>第{{ (viewerShot?.order ?? 0) + 1 }}镜（{{ viewerIndex + 1 }}/{{ viewerShots.length }}）· 用←→键切换</span>
+              <button type="button" class="ghost" @click="editViewerShot">编辑这一镜</button>
+            </div>
+            <div class="shot-viewer-filmstrip">
+              <button
+                v-for="shot in viewerShots"
+                :key="shot.id"
+                type="button"
+                class="shot-viewer-thumb"
+                :class="{ active: shot.id === shotViewer.shotId }"
+                @click="shotViewer.shotId = shot.id"
+              >
+                <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" />
+                <i v-else class="overview-ref-placeholder">{{ shot.order + 1 }}</i>
+              </button>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template v-if="projectViewMode === 'edit'">
@@ -3967,8 +4202,10 @@ function statusLabel(status: string): string {
       <div v-if="activeStep === 'characters'" class="character-box">
         <h2 style="margin-top: 0">角色库</h2>
         <p class="hint">
-          先把每个角色的设定图生成出来，下面分镜生成图片时会自动用同名角色的设定图当参考，
-          解决"每一镜角色长得不一样"的问题。
+          这里管理剧本里出现过的每个角色，两块内容分开填、各司其职：「外观描述」纯粹给生成
+          设定图用，先把设定图生成出来，下面分镜生成图片时会自动用同名角色的设定图当参考，
+          解决"每一镜角色长得不一样"的问题；「角色设定」记这个角色在剧情里的身份/性格/背景，
+          只是给你自己创作时参考，不会被喂进任何生成调用。
         </p>
         <div v-if="activeProject?.contentType === 'no_character'" class="warning-box">
           这个项目选的是"无固定角色"，剧本生成时不会刻意编人物出来——如果下面确实列出了角色，
@@ -4005,6 +4242,14 @@ function statusLabel(status: string): string {
               </button>
             </div>
             <p v-if="promptOptimizeState(`characterPrompt-${c.id}`).error" class="ai-optimize-error">{{ promptOptimizeState(`characterPrompt-${c.id}`).error }}</p>
+            <label class="character-prompt-label">角色设定（身份/性格/背景，仅供参考，不影响生成）</label>
+            <textarea
+              v-model="c.profile as string"
+              class="character-prompt-input"
+              rows="3"
+              placeholder="比如：女主角，17岁高中生，表面冷淡内心敏感，父母离异后跟着外婆长大"
+              @change="saveCharacterProfile(c)"
+            />
             <div class="character-actions">
               <button :disabled="generatingCharacter[c.id] || c.status === 'running'" @click="generateCharacter(c.id)">
                 {{ c.status === 'completed' ? '重新生成设定图' : '生成设定图' }}
@@ -5226,6 +5471,66 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; margin-top: 12px;
   background: #eff6ff; border-radius: 10px; font-size: 13px; color: #1d4ed8;
 }
+.overview-hint { margin: 0 0 12px; }
+
+/* 一键生成按钮"真的在跑"的小圆点转圈动画——之前按钮只在网络请求那几百毫秒里文字
+   变化，请求一回来就变回原样，用户完全看不出后台是不是还在跑；现在只要数据里
+   还有 running 状态就一直显示这个 + "生成中…(x/y)"文案，直到真的做完。 */
+.btn-spinner {
+  display: inline-block; width: 11px; height: 11px; margin-right: 6px; vertical-align: -1px;
+  border: 2px solid #d4d4d8; border-top-color: #2563eb; border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
+/* 场次+分镜合并展示：场景参考图和这一场戏的所有分镜画面放在同一张卡片里，
+   一眼就能比出"这场戏背景/光线跟每一镜画面是否对得上"，不用来回切换两个分开的区域。 */
+.overview-scene-block {
+  border: 1px solid #e4e4e7; border-radius: 12px; padding: 12px; margin-bottom: 14px; background: #fafafa;
+}
+.overview-scene-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.overview-scene-ref {
+  display: flex; align-items: center; gap: 8px; padding: 4px; border: none; background: none;
+  cursor: pointer; font: inherit; color: inherit; flex-shrink: 0;
+}
+.overview-scene-ref .overview-ref-thumb { width: 52px; height: 52px; flex-shrink: 0; }
+.overview-scene-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.overview-scene-summary {
+  margin: 0; font-size: 12px; color: #71717a; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 1; min-width: 0;
+}
+
+/* 分镜大图查看器：点缩略图打开的全屏浮层，中间大图 + 左右切换箭头 + 底部胶片条，
+   胶片条只列这一场戏的镜头，配合←→键翻页，方便集中比较同一场戏画面是否连贯。 */
+.shot-viewer-overlay {
+  position: fixed; inset: 0; background: rgba(24, 24, 27, 0.72); z-index: 200;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.shot-viewer-panel {
+  background: white; border-radius: 14px; padding: 16px; width: min(560px, 100%); max-height: 90vh;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.shot-viewer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 600; }
+.shot-viewer-body { display: flex; align-items: center; gap: 8px; }
+.shot-viewer-nav {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; border: 1px solid #e4e4e7; background: white;
+  font-size: 16px; cursor: pointer; line-height: 1;
+}
+.shot-viewer-nav:disabled { opacity: 0.35; cursor: default; }
+.shot-viewer-media {
+  flex: 1; min-height: 0; aspect-ratio: 9 / 16; max-height: 60vh; margin: 0 auto; border-radius: 10px;
+  background: #f4f4f5; border: 1px solid #e4e4e7; display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.shot-viewer-media img { width: 100%; height: 100%; object-fit: contain; }
+.shot-viewer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: #71717a; }
+.shot-viewer-filmstrip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.shot-viewer-thumb {
+  flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px; border: 2px solid transparent; padding: 0;
+  background: #f4f4f5; cursor: pointer; overflow: hidden;
+}
+.shot-viewer-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.shot-viewer-thumb.active { border-color: #2563eb; }
 
 /* 场次手风琴：一行一场戏，点头部展开/收起，展开的那一场把镜头列表铺在下面，
    跟"剧本"步骤的表格总览是同一个设计语言，不用左边网格+右边详情两栏来回看。 */

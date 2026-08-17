@@ -177,6 +177,13 @@ def _file_to_data_uri(path: str) -> str:
         return f"data:{mime};base64,{b64}"
 
 
+def file_to_data_uri(path: str) -> str:
+    """参考图压缩 + base64 data URI 编码，供 minimax_client.py 复用——这个逻辑跟 Ark
+    本身无关，纯粹是"本地文件转 data URI 前先压缩一下"的通用优化，不该在两个 provider
+    的客户端模块里各写一份。"""
+    return _file_to_data_uri(path)
+
+
 def generate_image(
     *,
     api_key: str,

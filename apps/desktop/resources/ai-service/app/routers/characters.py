@@ -107,6 +107,9 @@ class UpdateCharacterBody(BaseModel):
     # 外观描述/自定义提示词，改完点"重新生成设定图"就会带上新描述重新出图。
     # 传空字符串表示清空(不能传 None，None 在下面会被当"没传"过滤掉)。
     prompt: Optional[str] = None
+    # 角色设定：身份/性格/背景等叙事性描述，跟 prompt 分开管理，纯粹给创作者自己记录/
+    # 参考用，不影响任何生成调用。同样传空字符串表示清空。
+    profile: Optional[str] = None
 
 
 @router.patch("/characters/{character_id}")

@@ -5,8 +5,9 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.db import get_connection, new_id, now_iso
-from app.providers.seedance import generate_video_from_image
+from app.db import get_connection, get_settings, new_id, now_iso
+from app.providers import minimax as minimax_provider
+from app.providers import seedance as seedance_provider
 from app.providers.seedream import DEFAULT_IMAGE_RATIO, IMAGE_RATIOS
 from app.services.paths import to_static_url
 
@@ -83,11 +84,28 @@ def create_video_generation(body: CreateVideoGenerationBody):
     return {"videoId": video_id, "status": "running"}
 
 
+def _generate_video_from_image(
+    video_id: str, reference_path: str, prompt: str, ratio: str, project_id: Optional[str]
+) -> dict:
+    """按全局设置 Setting.videoProvider(seedance 默认 | minimax) 在两个 provider 的
+    独立"图生视频"函数之间派发——这个功能没有 Story/Shot 结构，不走 registry/Provider
+    抽象(见 seedance.py 里 generate_video_from_image 的注释)，所以两条 provider 各自的
+    实现之间要一个手动派发点，跟分镜生成视频那边靠 registry.resolve("video", 名字)
+    派发是同一个选择逻辑，只是没有 registry 可用。
+    """
+    with get_connection() as conn:
+        settings = get_settings(conn)
+    provider_name = settings.get("videoProvider") or "seedance"
+    if provider_name == "minimax":
+        return minimax_provider.generate_video_from_image(video_id, reference_path, prompt, ratio=ratio, project_id=project_id)
+    return seedance_provider.generate_video_from_image(video_id, reference_path, prompt, ratio=ratio, project_id=project_id)
+
+
 def _run_video_generation(
     video_id: str, reference_path: str, prompt: str, ratio: str, project_id: Optional[str]
 ) -> None:
     try:
-        result = generate_video_from_image(video_id, reference_path, prompt, ratio=ratio, project_id=project_id)
+        result = _generate_video_from_image(video_id, reference_path, prompt, ratio, project_id)
         with get_connection() as conn:
             conn.execute(
                 'UPDATE "VideoGeneration" SET status = ?, filePath = ?, providerId = ?, model = ?, '

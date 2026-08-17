@@ -67,6 +67,8 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "storyGenApiModel": None,
             "storyGenApiMaxTokens": 4096,
             "storyGenCliPath": None,
+            "videoProvider": "seedance",
+            "minimaxApiKey": None,
         }
     d = dict(row)
     if not d.get("indexTtsBaseUrl"):
@@ -79,6 +81,8 @@ def get_settings(conn: sqlite3.Connection) -> dict:
         d["exportBgmVolume"] = 0.2
     if not d.get("storyGenProvider"):
         d["storyGenProvider"] = "claude_cli"
+    if not d.get("videoProvider"):
+        d["videoProvider"] = "seedance"
     if d.get("storyGenApiMaxTokens") is None:
         d["storyGenApiMaxTokens"] = 4096
     for key in _JSON_SETTING_KEYS:
@@ -134,6 +138,11 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
     if "prompt" not in character_cols:
         conn.execute('ALTER TABLE "Character" ADD COLUMN "prompt" TEXT')
         conn.commit()
+    if "profile" not in character_cols:
+        # 角色设定(身份/性格/背景)，跟 prompt(纯外观描述，喂给 Seedream)分开管理，
+        # 见 schema.prisma 里 Character.profile 的注释。
+        conn.execute('ALTER TABLE "Character" ADD COLUMN "profile" TEXT')
+        conn.commit()
     setting_cols = {r[1] for r in conn.execute('PRAGMA table_info("Setting")').fetchall()}
     for col in _JSON_SETTING_KEYS:
         if col not in setting_cols:
@@ -181,6 +190,14 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         # "AI优化提示词"功能用的纯文本对话模型，留空就回退到 storyGenProvider
         # (claude_cli/api)，见 routers/prompts.py。
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "arkTextModel" TEXT')
+        conn.commit()
+    if "videoProvider" not in setting_cols:
+        # 视频生成走哪个 provider：seedance(默认，火山方舟) | minimax(MiniMax H3)，
+        # 全局唯一一份设置，见 app/providers/minimax.py、app/providers/seedance.py。
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "videoProvider" TEXT DEFAULT \'seedance\'')
+        conn.commit()
+    if "minimaxApiKey" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "minimaxApiKey" TEXT')
         conn.commit()
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     _POSTER_DDL_LEGACY_PRESET = """

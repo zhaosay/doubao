@@ -5,7 +5,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.db import get_connection, new_id, now_iso
+from app.db import get_connection, get_settings, new_id, now_iso
 from app.providers.registry import registry
 from app.services.paths import to_static_url
 
@@ -142,7 +142,15 @@ def _run_generation(shot_id: str, kind: str, asset_id: str, task_id: str, body: 
         with get_connection() as conn:
             shot = dict(_get_shot_or_404(conn, shot_id))
 
-        provider = registry.resolve(kind, "default")
+        if kind == "video":
+            # 视频生成按全局设置 Setting.videoProvider 选 provider(seedance 默认 |
+            # minimax)，跟 image/voice 固定用 "default" 不一样——这是目前唯一一个
+            # 用户能自己选实现的能力，见 app/main.py 里 "video" 下注册的多个具名实现。
+            with get_connection() as conn:
+                video_settings = get_settings(conn)
+            provider = registry.resolve("video", video_settings.get("videoProvider") or "seedance")
+        else:
+            provider = registry.resolve(kind, "default")
 
         if kind == "image":
             reference_image_paths = body.referenceImagePaths

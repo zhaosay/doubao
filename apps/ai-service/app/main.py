@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.providers.indextts import IndexTTSVoiceProvider
+from app.providers.minimax import MiniMaxVideoProvider
 from app.providers.registry import registry
 from app.providers.seedance import SeedanceVideoProvider
 from app.providers.seedream import SeedreamImageProvider
@@ -24,7 +25,12 @@ from app.routers import (
 from app.services.paths import DEFAULT_OUTPUT_ROOT, resolve_static_file
 
 registry.register("image", "default", SeedreamImageProvider())
+# "video" 下注册两个可选实现，运行时按 Setting.videoProvider 选("default" 保留指向
+# Seedance，兼容万一还有别处按老写法 resolve("video","default")，实际调用点(shots.py
+# 的 _run_generation)已经改成按名字选)。
 registry.register("video", "default", SeedanceVideoProvider())
+registry.register("video", "seedance", SeedanceVideoProvider())
+registry.register("video", "minimax", MiniMaxVideoProvider())
 registry.register("voice", "default", IndexTTSVoiceProvider())
 
 app = FastAPI(title="AI视频工作台 ai-service")

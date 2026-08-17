@@ -61,6 +61,11 @@ model Character {
   // 后面一起传给 Seedream；留空就只靠角色名让模型自由发挥。用户改完这个字段后点
   // "重新生成设定图"就会带上新描述重新出图，不用每次都去改镜头的画面描述才能调角色长相。
   prompt       String?
+  // 角色设定：这个角色在剧情里的身份/性格/背景等叙事性描述，跟上面 prompt(纯粹给
+  // Seedream 生成设定图用的外观描述)是两回事——prompt 只管"长什么样"，这个字段管
+  // "是谁、什么性格、什么来历"，目前只是给创作者自己记录/参考用，不会被喂进剧本生成
+  // 或分镜生图的提示词里（那两条流程各自读 prompt/drawPrompt，不读这个字段）。
+  profile      String?
   refImagePath String?
   status       String   @default("pending") // pending | running | completed | failed
   error        String?
@@ -262,6 +267,15 @@ model Setting {
   // storyGenProvider(claude_cli/api)。
   arkTextModel    String?
   indexTtsBaseUrl String?  @default("http://localhost:7860") // 局域网 IndexTTS 服务地址
+
+  // 分镜/图生视频用哪个视频生成 provider：seedance(默认，火山方舟 Seedance) | minimax
+  // (MiniMax H3)。全局唯一一份设置，不分项目——两条路径(分镜视频生成 + 无剧本图生视频)
+  // 都读这一个字段，见 app/providers/registry.py 的多 provider 注册 + app/routers/shots.py
+  // 的 _run_generation、app/routers/video_generations.py 的 _generate_video_from_image。
+  videoProvider String? @default("seedance")
+  // MiniMax 开放平台的 API Key，跟 arkApiKey 是完全独立的一把 key(不同账号体系)，
+  // 只在 videoProvider=minimax 时才会用到。
+  minimaxApiKey String?
 
   // 目录设置：生成产物（角色图/场景图/分镜图片视频配音）默认存在 <项目根目录>/output 下，
   // 留空就是这个默认值；改了之后新生成的东西存到新目录，旧文件不会被搬过去，
