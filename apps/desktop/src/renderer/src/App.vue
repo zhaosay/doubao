@@ -2332,6 +2332,104 @@ function jumpToShot(sceneOrder: number, shotOrder: number): void {
   activeShotId.value = shot.id
 }
 
+// ---- "总览模式"：跟"编辑模式"(原有 step-tabs + 手风琴)是同一份数据的两种视图，
+// 切换不会丢状态——总览模式让用户先一眼扫完参考图、再一眼扫完所有分镜画面，
+// 确认没问题了再挑着点批量生成按钮；点具体某张卡片会跳回编辑模式对应的位置，
+// 方便临时改一下文字/参考图。默认值：还没有剧本时停在编辑模式（引导先生成/导入
+// 剧本，总览模式在没有场次/镜头时是空的没意义），已经有剧本了默认进总览模式。
+type ProjectViewMode = 'overview' | 'edit'
+const projectViewMode = ref<ProjectViewMode>('edit')
+watch(
+  () => activeProject.value?.id,
+  () => {
+    projectViewMode.value = (activeProject.value?.scenes.length ?? 0) > 0 ? 'overview' : 'edit'
+  }
+)
+
+function jumpToCharactersEdit(): void {
+  projectViewMode.value = 'edit'
+  activeStep.value = 'characters'
+}
+
+function jumpToSceneEdit(sceneIdx: number): void {
+  projectViewMode.value = 'edit'
+  activeStep.value = 'shots'
+  activateScene(sceneIdx)
+}
+
+function jumpToShotEdit(sceneOrder: number, shotOrder: number): void {
+  projectViewMode.value = 'edit'
+  jumpToShot(sceneOrder, shotOrder)
+}
+
+// 总览模式的 5 个"一键生成"批量按钮，各自独立触发，互不牵动。跟单项生成
+// (generateCharacter/generateAsset 等)共用同一套"点了先请求、请求完立刻刷新一次
+// 本地状态"模式——批量接口内部是后台线程跑，接口本身立刻返回 running，这里手动
+// 刷新一次拿到"已经被标记成 running"的最新状态，后续进度交给已有的 3 秒轮询
+// (startPolling 里的 hasRunningWork 判断)接力，不用另外单独写一套轮询逻辑。
+const batchRunning = reactive({
+  characters: false,
+  scenes: false,
+  images: false,
+  videos: false,
+  voices: false
+})
+
+async function generateAllCharacters(): Promise<void> {
+  if (!activeProject.value) return
+  batchRunning.characters = true
+  try {
+    await api(`/projects/${activeProject.value.id}/characters/generate-all`, { method: 'POST' })
+    await loadProjectDetail(activeProject.value.id)
+  } finally {
+    batchRunning.characters = false
+  }
+}
+
+async function generateAllScenes(): Promise<void> {
+  if (!activeProject.value) return
+  batchRunning.scenes = true
+  try {
+    await api(`/projects/${activeProject.value.id}/scenes/generate-all`, { method: 'POST' })
+    await loadProjectDetail(activeProject.value.id)
+  } finally {
+    batchRunning.scenes = false
+  }
+}
+
+async function generateAllShotImages(): Promise<void> {
+  if (!activeProject.value) return
+  batchRunning.images = true
+  try {
+    await api(`/projects/${activeProject.value.id}/shots/generate-all-images`, { method: 'POST' })
+    await loadProjectDetail(activeProject.value.id)
+  } finally {
+    batchRunning.images = false
+  }
+}
+
+async function generateAllShotVideos(): Promise<void> {
+  if (!activeProject.value) return
+  batchRunning.videos = true
+  try {
+    await api(`/projects/${activeProject.value.id}/shots/generate-all-videos`, { method: 'POST' })
+    await loadProjectDetail(activeProject.value.id)
+  } finally {
+    batchRunning.videos = false
+  }
+}
+
+async function generateAllShotVoices(): Promise<void> {
+  if (!activeProject.value) return
+  batchRunning.voices = true
+  try {
+    await api(`/projects/${activeProject.value.id}/shots/generate-all-voices`, { method: 'POST' })
+    await loadProjectDetail(activeProject.value.id)
+  } finally {
+    batchRunning.voices = false
+  }
+}
+
 const hasRunningWork = computed(() => {
   if (activeProject.value?.story?.status === 'running') return true
   if (characters.value.some((c) => c.status === 'running')) return true
@@ -3516,7 +3614,7 @@ function statusLabel(status: string): string {
            真正的 tab 切换：同一时刻只显示 activeStep 对应的那一块内容，不是长滚动页面；
            但步骤之间不锁——经常需要跳回去重新生成某个角色或某一镜，随便点随便切。
            放在页面最顶上，标题/简介这些跟着切下面走，不用先划过一段简介才找到导航。 -->
-      <nav class="step-bar">
+      <nav v-if="projectViewMode === 'edit'" class="step-bar">
         <button class="step-item" :class="{ active: activeStep === 'story' }" @click="activeStep = 'story'">
           <span class="step-num">①</span> 剧本
           <span class="step-status">{{ storyStepStatus }}</span>
@@ -3540,6 +3638,20 @@ function statusLabel(status: string): string {
           <h2 :title="activeProject.title">{{ activeProject.title }}</h2>
           <span class="tag" :class="projectStatusColorClass(activeProject.status)">{{ projectStatusLabel(activeProject.status) }}</span>
           <span v-if="activeProject.lastExportedAt" class="tag tag-exported">已导出</span>
+          <div class="view-mode-toggle">
+            <button
+              type="button"
+              class="tab-btn"
+              :class="{ active: projectViewMode === 'overview' }"
+              @click="projectViewMode = 'overview'"
+            >总览模式</button>
+            <button
+              type="button"
+              class="tab-btn"
+              :class="{ active: projectViewMode === 'edit' }"
+              @click="projectViewMode = 'edit'"
+            >编辑模式</button>
+          </div>
         </div>
         <!-- 出图风格全程都在生效：角色设定图/场景参考图/每一镜画面，每次生成时都会现读
              Project.styleMode(见 seedream.py 的 _style_mode_for_*)，不是只在写剧本那一刻
@@ -3578,6 +3690,114 @@ function statusLabel(status: string): string {
         <button @click="view = 'settings'">去设置页填一下</button>
       </div>
 
+      <template v-if="projectViewMode === 'overview'">
+        <section class="overview-section">
+          <div class="overview-section-head">
+            <h3>参考图一览</h3>
+            <div class="overview-section-actions">
+              <button class="ghost" :disabled="generatingStory" @click="generateStory">
+                {{ generatingStory ? '生成中…' : '剧本一键生成' }}
+              </button>
+              <button class="ghost" :disabled="batchRunning.characters" @click="generateAllCharacters">
+                {{ batchRunning.characters ? '触发中…' : '角色一键生成' }}
+              </button>
+              <button class="ghost" :disabled="batchRunning.scenes" @click="generateAllScenes">
+                {{ batchRunning.scenes ? '触发中…' : '场景参考图一键生成' }}
+              </button>
+            </div>
+          </div>
+          <p v-if="characters.length === 0 && activeProject.scenes.length === 0" class="hint">
+            还没有剧本，先用上面「剧本一键生成」或去编辑模式手动加剧本。
+          </p>
+          <template v-else>
+            <p class="overview-subhead">角色</p>
+            <div class="overview-ref-grid">
+              <button
+                v-for="c in characters"
+                :key="c.id"
+                type="button"
+                class="overview-ref-card"
+                @click="jumpToCharactersEdit"
+              >
+                <span class="overview-ref-thumb" :class="statusColorClass(c.status)">
+                  <img v-if="c.url" :src="`${apiBaseUrl}${c.url}`" />
+                  <i v-else class="overview-ref-placeholder">{{ c.status === 'running' ? '…' : '角' }}</i>
+                  <span class="overview-ref-dot" :class="statusColorClass(c.status)"></span>
+                </span>
+                <span class="overview-ref-label">{{ c.name }}</span>
+              </button>
+              <p v-if="characters.length === 0" class="hint">还没有角色，先生成剧本会自动解析出角色。</p>
+            </div>
+            <p class="overview-subhead">场景</p>
+            <div class="overview-ref-grid">
+              <button
+                v-for="(scene, sIdx) in activeProject.scenes"
+                :key="scene.id"
+                type="button"
+                class="overview-ref-card"
+                @click="jumpToSceneEdit(sIdx)"
+              >
+                <span class="overview-ref-thumb" :class="statusColorClass(scene.status)">
+                  <img v-if="scene.url" :src="`${apiBaseUrl}${scene.url}`" />
+                  <i v-else class="overview-ref-placeholder">{{ scene.status === 'running' ? '…' : '景' }}</i>
+                  <span class="overview-ref-dot" :class="statusColorClass(scene.status)"></span>
+                </span>
+                <span class="overview-ref-label">第{{ scene.order + 1 }}场</span>
+              </button>
+            </div>
+          </template>
+        </section>
+
+        <section class="overview-section">
+          <div class="overview-section-head">
+            <h3>分镜一览</h3>
+            <div class="overview-section-actions">
+              <button class="ghost" :disabled="batchRunning.images" @click="generateAllShotImages">
+                {{ batchRunning.images ? '触发中…' : '分镜图片一键生成' }}
+              </button>
+            </div>
+          </div>
+          <p v-if="activeProject.scenes.length === 0" class="hint">还没有分镜，先去生成/导入剧本。</p>
+          <div v-for="scene in activeProject.scenes" :key="scene.id">
+            <p class="overview-subhead">第{{ scene.order + 1 }}场</p>
+            <div class="overview-shot-grid">
+              <button
+                v-for="shot in scene.shots"
+                :key="shot.id"
+                type="button"
+                class="overview-shot-card"
+                @click="jumpToShotEdit(scene.order + 1, shot.order + 1)"
+              >
+                <span class="overview-shot-media" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">
+                  <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" />
+                  <i v-else class="overview-shot-placeholder">{{ assetOf(shot.id, 'image')?.status === 'running' ? '生成中…' : '暂无画面' }}</i>
+                  <span class="overview-shot-dot" :class="statusColorClass(assetOf(shot.id, 'image')?.status)"></span>
+                  <span v-if="assetOf(shot.id, 'video')?.status === 'completed'" class="overview-shot-video-badge">▶</span>
+                  <button
+                    type="button"
+                    class="overview-shot-refresh"
+                    title="重新生成这一镜的图片"
+                    :disabled="generatingAsset[`${shot.id}:image`]"
+                    @click.stop="generateAsset(shot.id, 'image')"
+                  >↻</button>
+                </span>
+                <span class="overview-shot-label">第{{ scene.order + 1 }}场·第{{ shot.order + 1 }}镜</span>
+              </button>
+            </div>
+          </div>
+          <div class="overview-cta-bar">
+            <span>分镜图片都确认没问题了 →</span>
+            <button class="ghost accent" :disabled="batchRunning.videos" @click="generateAllShotVideos">
+              {{ batchRunning.videos ? '触发中…' : '分镜视频一键生成' }}
+            </button>
+            <button class="ghost accent" :disabled="batchRunning.voices" @click="generateAllShotVoices">
+              {{ batchRunning.voices ? '触发中…' : '配音一键生成' }}
+            </button>
+          </div>
+        </section>
+      </template>
+
+      <template v-if="projectViewMode === 'edit'">
       <div v-if="activeStep === 'story'">
         <section class="story-command-panel">
           <div class="story-command-summary">
@@ -4500,6 +4720,7 @@ function statusLabel(status: string): string {
           </p>
         </template>
       </div>
+      </template>
     </section>
     </main>
   </div>
@@ -4932,6 +5153,54 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .shot-stage-status { font-size: 10px; flex-shrink: 0; }
 .shot-stage-content { margin-bottom: 8px; }
+
+/* 右上角"总览模式/编辑模式"切换：跟剧本步骤的 story-view-toggle 共用 .tab-btn 样式，
+   保持视觉一致。 */
+.view-mode-toggle { display: flex; gap: 6px; margin-left: auto; }
+
+/* 总览模式：参考图一览 + 分镜一览两块，都是"先看完再决定要不要批量生成"的浏览体验，
+   不追求跟编辑模式手风琴一样的信息密度，卡片更大、更适合扫视。 */
+.overview-section { margin: 16px 0 28px; }
+.overview-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.overview-section-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.overview-section-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.overview-subhead { font-size: 12px; color: #71717a; margin: 12px 0 8px; }
+.overview-ref-grid, .overview-shot-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-bottom: 8px;
+}
+.overview-ref-card, .overview-shot-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 0; border: none; background: none;
+  cursor: pointer; text-align: left; font: inherit; color: inherit;
+}
+.overview-ref-thumb {
+  position: relative; height: 64px; border-radius: 10px; background: #f4f4f5; border: 1px solid #e4e4e7;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.overview-ref-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.overview-ref-placeholder { font-style: normal; font-size: 12px; color: #a1a1aa; }
+.overview-ref-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; }
+.overview-ref-label { font-size: 11px; color: #52525b; text-align: center; }
+.overview-shot-media {
+  position: relative; height: 84px; border-radius: 10px; background: #f4f4f5; border: 1px solid #e4e4e7;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.overview-shot-media img { width: 100%; height: 100%; object-fit: cover; }
+.overview-shot-placeholder { font-style: normal; font-size: 11px; color: #a1a1aa; padding: 0 6px; text-align: center; }
+.overview-shot-dot { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; }
+.overview-shot-video-badge {
+  position: absolute; bottom: 6px; right: 6px; font-size: 9px; color: #16a34a; background: white;
+  border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+}
+.overview-shot-refresh {
+  position: absolute; bottom: 5px; left: 5px; width: 20px; height: 20px; border-radius: 6px; font-size: 12px;
+  border: 1px solid #e4e4e7; background: white; cursor: pointer; line-height: 1; padding: 0;
+}
+.overview-shot-refresh:disabled { opacity: 0.5; cursor: default; }
+.overview-shot-label { font-size: 11px; color: #71717a; }
+.overview-cta-bar {
+  display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; margin-top: 12px;
+  background: #eff6ff; border-radius: 10px; font-size: 13px; color: #1d4ed8;
+}
 
 /* 场次手风琴：一行一场戏，点头部展开/收起，展开的那一场把镜头列表铺在下面，
    跟"剧本"步骤的表格总览是同一个设计语言，不用左边网格+右边详情两栏来回看。 */
