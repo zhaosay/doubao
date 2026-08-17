@@ -608,6 +608,18 @@ ipcMain.handle('open-path', async (_event, filePath: string) => {
   return shell.openPath(filePath)
 })
 
+// "打开目录"按钮：在系统文件管理器(Finder/资源管理器)里打开这个文件所在的文件夹，
+// 并选中这个文件——跟 open-path(用默认程序打开文件本身)是两个不同的需求，
+// open-path 是"看这张图/这条视频"，这个是"我要去这个文件夹里找到它、可能还要
+// 顺手拷走/传给别人"。shell.showItemInFolder 找不到文件时不会抛异常也不会返回
+// 错误信息，只是静默失败，所以这里主动检查一下文件是否存在，能给前端一个明确提示。
+ipcMain.handle('show-item-in-folder', async (_event, filePath: string) => {
+  if (!filePath) return '未提供文件路径'
+  if (!existsSync(filePath)) return `文件不存在: ${filePath}`
+  shell.showItemInFolder(filePath)
+  return null
+})
+
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',

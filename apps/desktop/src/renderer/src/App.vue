@@ -15,6 +15,7 @@ import appLogoUrl from './assets/logo.png'
 interface AiManjuBridge {
   apiBaseUrl: string
   openPath?: (filePath: string) => Promise<string>
+  showItemInFolder?: (filePath: string) => Promise<string | null>
   pickImageFile?: () => Promise<{ path: string; dataUrl: string | null; error?: string | null } | null>
   readImagePreview?: (filePath: string) => Promise<string | null>
   getUpdateStatus?: () => Promise<AppUpdateStatus>
@@ -120,6 +121,18 @@ async function openInSystemViewer(filePath: string | null | undefined): Promise<
   }
   const err = await aiManjuBridge.openPath(filePath)
   openFileError.value = err ? `打开文件失败：${err}（路径：${filePath}）` : null
+}
+
+// "打开目录"按钮：在系统文件管理器里定位到这个文件(选中它)，方便直接拷走/传给别人，
+// 跟 openInSystemViewer(用默认程序打开文件本身，比如双击看大图)是两个不同的需求。
+async function openContainingFolder(filePath: string | null | undefined): Promise<void> {
+  if (!filePath) return
+  if (!aiManjuBridge?.showItemInFolder) {
+    openFileError.value = '当前环境不支持打开文件夹（仅桌面 app 内可用）'
+    return
+  }
+  const err = await aiManjuBridge.showItemInFolder(filePath)
+  openFileError.value = err ? `打开文件夹失败：${err}` : null
 }
 
 // 参考图字段原来只能手打本地绝对路径，不知道路径的话根本没法用。现在加个"选择文件…"
@@ -1661,19 +1674,24 @@ async function generateStory(): Promise<void> {
   }
 }
 
-// 总览模式"剧本一键生成"专用包装：重新生成剧本会覆盖场次/镜头文本，但角色库、
-// 场景参考图、已经生成的分镜图片/视频都不会跟着自动重新生成——剧本一变，这些很可能
-// 就对不上了，得用户自己决定要不要挑几个重来。已经有角色/场次的情况下先提醒一句，
-// 从零开始的新项目(什么都还没有)不用打扰。编辑模式里原有的"AI重新生成剧本"按钮
-// 维持老行为不受影响，这个提示只针对总览模式这个入口。
+// 总览模式"剧本一键生成"专用包装：注意 POST /story/generate 的真实行为是"追加"，
+// 不是"覆盖"——后端 projects.py 的 generate_story 明确写了"重新生成会在已有 Scene/Shot
+// 基础上追加，不会先清空"，角色库那边 list_characters 也只会新增没出现过的角色名，
+// 不会删掉已有角色。所以已有内容不会丢/不会消失，但按钮名字叫"重新生成"容易让人以为
+// 是推倒重来——真实效果是"接着已有场次往后再写一段"，多点几次会越堆越多，这是用户
+// 容易会错意的地方，先提醒一句。真想要完全推倒重来，得去"剧本"步骤用"导入剧本"的
+// 替换模式先清空。编辑模式里原有的"AI重新生成剧本"按钮维持老行为不受影响，这个提示
+// 只针对总览模式这个入口。
 async function generateStoryFromOverview(): Promise<void> {
   if (!activeProject.value) return
   const hasDownstream = characters.value.length > 0 || activeProject.value.scenes.length > 0
   if (hasDownstream) {
     const ok = window.confirm(
-      '重新生成剧本会覆盖当前的场次和分镜内容。角色库、场景参考图、已经生成的分镜图片/视频' +
-        '不会自动跟着重新生成——剧本变了之后这些很可能对不上，需要之后自己挑几个重新生成一遍。\n\n' +
-        '确定要重新生成剧本吗？'
+      '"剧本一键生成"会在现有场次基础上追加新的场次和镜头，不会删除或覆盖已有内容，' +
+        '角色库、场景参考图、已经生成的分镜素材也都不会被清掉。\n\n' +
+        '如果是想完全推倒重来，需要先去「剧本」步骤用「导入剧本」的替换模式清空，' +
+        '不然这次生成的内容会接在后面，越点越多。\n\n' +
+        '确定要继续吗？'
     )
     if (!ok) return
   }
@@ -2387,14 +2405,19 @@ function jumpToShot(sceneOrder: number, shotOrder: number): void {
 // ---- "总览模式"：跟"编辑模式"(原有 step-tabs + 手风琴)是同一份数据的两种视图，
 // 切换不会丢状态——总览模式让用户先一眼扫完参考图、再一眼扫完所有分镜画面，
 // 确认没问题了再挑着点批量生成按钮；点具体某张卡片会跳回编辑模式对应的位置，
-// 方便临时改一下文字/参考图。默认值：还没有剧本时停在编辑模式（引导先生成/导入
-// 剧本，总览模式在没有场次/镜头时是空的没意义），已经有剧本了默认进总览模式。
+// 方便临时改一下文字/参考图。默认值：不管这个项目有没有剧本，一律先进总览模式——
+// 没有剧本时总览页会显示"还没有剧本，先用剧本一键生成"的提示引导，不会是一片空白，
+// 不需要靠"有没有场次"分两种默认行为。之前按场次数量分流，会导致"刚在编辑模式里
+// 生成完剧本"这种同一次打开期间的状态变化不会自动切回总览(watch 只在切换项目、
+// 也就是 activeProject.id 变化时触发一次)，用户体验是"生成完剧本还是停在编辑模式"，
+// 跟"默认应该是总览模式"的预期不符，所以干脆去掉这个判断，每次打开/切换项目都统一
+// 回到总览模式。
 type ProjectViewMode = 'overview' | 'edit'
-const projectViewMode = ref<ProjectViewMode>('edit')
+const projectViewMode = ref<ProjectViewMode>('overview')
 watch(
   () => activeProject.value?.id,
   () => {
-    projectViewMode.value = (activeProject.value?.scenes.length ?? 0) > 0 ? 'overview' : 'edit'
+    projectViewMode.value = 'overview'
   }
 )
 
@@ -3501,6 +3524,7 @@ function statusLabel(status: string): string {
               <img v-if="poster.url" :src="`${apiBaseUrl}${poster.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(poster.filePath)" />
               <span v-else>{{ poster.status === 'running' ? '生成中…' : statusLabel(poster.status) }}</span>
             </div>
+            <button v-if="poster.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(poster.filePath)">📁 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag tag-style-mode">{{ poster.templateLabel || '自定义' }}</span>
@@ -3636,6 +3660,7 @@ function statusLabel(status: string): string {
               <video v-if="item.url" controls :src="`${apiBaseUrl}${item.url}`" @dblclick="openInSystemViewer(item.filePath)" />
               <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
             </div>
+            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)">📁 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
@@ -3792,6 +3817,7 @@ function statusLabel(status: string): string {
               <img v-if="item.url" :src="`${apiBaseUrl}${item.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(item.filePath)" />
               <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
             </div>
+            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)">📁 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag tag-style-mode">{{ styleModeLabels[item.styleMode] }}</span>
@@ -4019,18 +4045,26 @@ function statusLabel(status: string): string {
               <button type="button" class="ghost" @click="closeShotViewer">✕ 关闭</button>
             </div>
             <div class="shot-viewer-body">
-              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex <= 0" @click="viewerStep(-1)">‹</button>
+              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex <= 0" @click="viewerStep(-1)">←</button>
               <div class="shot-viewer-media" :class="statusColorClass(assetOf(viewerShot?.id ?? '', 'image')?.status)">
                 <img v-if="viewerShot && assetOf(viewerShot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(viewerShot.id, 'image')?.url}`" />
                 <i v-else class="overview-shot-placeholder">
                   {{ viewerShot && assetOf(viewerShot.id, 'image')?.status === 'running' ? '生成中…' : '暂无画面' }}
                 </i>
               </div>
-              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex >= viewerShots.length - 1" @click="viewerStep(1)">›</button>
+              <button type="button" class="shot-viewer-nav" :disabled="viewerIndex >= viewerShots.length - 1" @click="viewerStep(1)">→</button>
             </div>
             <div class="shot-viewer-meta">
               <span>第{{ (viewerShot?.order ?? 0) + 1 }}镜（{{ viewerIndex + 1 }}/{{ viewerShots.length }}）· 用←→键切换</span>
-              <button type="button" class="ghost" @click="editViewerShot">编辑这一镜</button>
+              <div class="shot-viewer-meta-actions">
+                <button
+                  v-if="assetOf(viewerShot?.id ?? '', 'image')?.filePath"
+                  type="button"
+                  class="open-folder-btn"
+                  @click="openContainingFolder(assetOf(viewerShot?.id ?? '', 'image')?.filePath)"
+                >📁 打开目录</button>
+                <button type="button" class="ghost" @click="editViewerShot">编辑这一镜</button>
+              </div>
             </div>
             <div class="shot-viewer-filmstrip">
               <button
@@ -4221,6 +4255,7 @@ function statusLabel(status: string): string {
               <span class="tag" :class="statusColorClass(c.status)">{{ statusLabel(c.status) }}</span>
             </div>
             <img v-if="c.url" :src="`${apiBaseUrl}${c.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(c.refImagePath)" />
+            <button v-if="c.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(c.refImagePath)">📁 打开目录</button>
             <p v-if="modelLabel(c.providerId, c.model)" class="hint model-tag">{{ modelLabel(c.providerId, c.model) }}</p>
             <p v-if="c.error" class="error">{{ c.error }}</p>
             <label class="character-prompt-label">外观描述/提示词</label>
@@ -4380,6 +4415,7 @@ function statusLabel(status: string): string {
                       {{ scene.status === 'running' ? '生成中…' : '暂无场景图' }}
                     </div>
                     <span class="scene-ref-media-tag">生成图</span>
+                    <button v-if="scene.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(scene.refImagePath)">📁 打开目录</button>
                   </div>
                   <div class="scene-ref-preview scene-ref-upload-preview">
                     <img
@@ -4573,6 +4609,7 @@ function statusLabel(status: string): string {
                             <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" @dblclick="openInSystemViewer(assetOf(shot.id, 'image')?.filePath)" />
                             <span v-else>{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
                           </div>
+                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)">📁 打开目录</button>
                         </div>
                         <div class="media-correspondence">当前分镜图片 <span>↓</span> 作为视频默认起始帧</div>
                         <div class="shot-media-card">
@@ -4581,11 +4618,13 @@ function statusLabel(status: string): string {
                             <video v-if="assetOf(shot.id, 'video')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'video')?.url}`" controls @dblclick="openInSystemViewer(assetOf(shot.id, 'video')?.filePath)" />
                             <span v-else>{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
                           </div>
+                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)">📁 打开目录</button>
                         </div>
                         <div class="shot-media-card shot-media-card-audio">
                           <div class="shot-media-card-title"><span>镜头语音</span><span :class="statusColorClass(assetOf(shot.id, 'voice')?.status)">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span></div>
                           <audio v-if="assetOf(shot.id, 'voice')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'voice')?.url}`" controls @dblclick="openInSystemViewer(assetOf(shot.id, 'voice')?.filePath)" />
                           <span v-else class="hint">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
+                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)">📁 打开目录</button>
                         </div>
                       </aside>
                       <div class="shot-settings-pane">
@@ -4719,15 +4758,18 @@ function statusLabel(status: string): string {
                         <span class="shot-stage-status" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
                       </div>
                       <div class="pair-row shot-stage-content">
-                        <div class="pair-media" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">
-                          <img
-                            v-if="assetOf(shot.id, 'image')?.url"
-                            :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`"
-                            title="双击用系统程序打开原图"
-                            @dblclick="openInSystemViewer(assetOf(shot.id, 'image')?.filePath)"
-                          />
-                          <span v-else-if="assetOf(shot.id, 'image')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
-                          <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
+                        <div class="pair-media-col">
+                          <div class="pair-media" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">
+                            <img
+                              v-if="assetOf(shot.id, 'image')?.url"
+                              :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`"
+                              title="双击用系统程序打开原图"
+                              @dblclick="openInSystemViewer(assetOf(shot.id, 'image')?.filePath)"
+                            />
+                            <span v-else-if="assetOf(shot.id, 'image')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
+                            <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
+                          </div>
+                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)">📁 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <label>画面描述</label>
@@ -4771,16 +4813,19 @@ function statusLabel(status: string): string {
                         <span class="shot-stage-status" :class="statusColorClass(assetOf(shot.id, 'video')?.status)">{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
                       </div>
                       <div class="pair-row shot-stage-content">
-                        <div class="pair-media" :class="statusColorClass(assetOf(shot.id, 'video')?.status)">
-                          <video
-                            v-if="assetOf(shot.id, 'video')?.url"
-                            :src="`${apiBaseUrl}${assetOf(shot.id, 'video')?.url}`"
-                            controls
-                            title="双击用系统程序打开原视频"
-                            @dblclick="openInSystemViewer(assetOf(shot.id, 'video')?.filePath)"
-                          />
-                          <span v-else-if="assetOf(shot.id, 'video')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
-                          <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
+                        <div class="pair-media-col">
+                          <div class="pair-media" :class="statusColorClass(assetOf(shot.id, 'video')?.status)">
+                            <video
+                              v-if="assetOf(shot.id, 'video')?.url"
+                              :src="`${apiBaseUrl}${assetOf(shot.id, 'video')?.url}`"
+                              controls
+                              title="双击用系统程序打开原视频"
+                              @dblclick="openInSystemViewer(assetOf(shot.id, 'video')?.filePath)"
+                            />
+                            <span v-else-if="assetOf(shot.id, 'video')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
+                            <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
+                          </div>
+                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)">📁 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <label>运镜/动态描述</label>
@@ -4809,16 +4854,19 @@ function statusLabel(status: string): string {
                         <span class="shot-stage-status" :class="statusColorClass(assetOf(shot.id, 'voice')?.status)">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
                       </div>
                       <div class="pair-row shot-stage-content">
-                        <div class="pair-media pair-media-audio" :class="statusColorClass(assetOf(shot.id, 'voice')?.status)">
-                          <audio
-                            v-if="assetOf(shot.id, 'voice')?.url"
-                            :src="`${apiBaseUrl}${assetOf(shot.id, 'voice')?.url}`"
-                            controls
-                            title="双击用系统程序打开原音频"
-                            @dblclick="openInSystemViewer(assetOf(shot.id, 'voice')?.filePath)"
-                          />
-                          <span v-else-if="assetOf(shot.id, 'voice')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
-                          <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
+                        <div class="pair-media-col">
+                          <div class="pair-media pair-media-audio" :class="statusColorClass(assetOf(shot.id, 'voice')?.status)">
+                            <audio
+                              v-if="assetOf(shot.id, 'voice')?.url"
+                              :src="`${apiBaseUrl}${assetOf(shot.id, 'voice')?.url}`"
+                              controls
+                              title="双击用系统程序打开原音频"
+                              @dblclick="openInSystemViewer(assetOf(shot.id, 'voice')?.filePath)"
+                            />
+                            <span v-else-if="assetOf(shot.id, 'voice')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
+                            <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
+                          </div>
+                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)">📁 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <div class="pair-text-label-row">
@@ -4889,6 +4937,7 @@ function statusLabel(status: string): string {
                                   <div v-else class="candidate-placeholder">{{ statusLabel(c.status) }}</div>
                                   <span v-if="c.selected" class="tag">已选用</span>
                                   <p v-if="c.error" class="error">{{ c.error }}</p>
+                                  <button v-if="c.filePath" type="button" class="open-folder-btn" @click.stop="openContainingFolder(c.filePath)">📁</button>
                                 </div>
                               </div>
                             </div>
@@ -5171,6 +5220,15 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 8px 12px; font-size: 13px; margin-bottom: 16px;
 }
 .file-open-toast button { flex-shrink: 0; }
+
+/* "打开目录"小按钮：跟在每一张生成图/每一段生成视频下面，点开系统文件管理器
+   直接定位到这个文件，方便拷走/传给别人，不用先双击打开文件再回头去找它在哪。 */
+.open-folder-btn {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px;
+  border: 1px solid #e4e4e7; border-radius: 6px; background: white; color: #52525b;
+  cursor: pointer; margin-top: 4px; font-family: inherit;
+}
+.open-folder-btn:hover { background: #f4f4f5; }
 
 .step-bar {
   display: flex; gap: 8px; margin-bottom: 20px; padding: 10px; background: #fafafa;
@@ -5517,13 +5575,20 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 16px; cursor: pointer; line-height: 1;
 }
 .shot-viewer-nav:disabled { opacity: 0.35; cursor: default; }
+/* 之前这里给了个固定的 9:16 比例盒子 + object-fit:contain——项目实际的生成比例
+   (Project.aspectRatio)可能是 1:1/4:3/16:9 等任何一种，跟图片本身比例对不上时，
+   contain 会在盒子里留出灰白色的空白条("白块")。改成不强行定比例，让盒子跟着图片
+   的真实渲染尺寸走(img 用 max-width/max-height 限制，width/height 都是 auto)，
+   没有图片时才靠 min-height 撑一个占位高度，不会看起来像一块空白色块。 */
 .shot-viewer-media {
-  flex: 1; min-height: 0; aspect-ratio: 9 / 16; max-height: 60vh; margin: 0 auto; border-radius: 10px;
+  flex: 1; min-width: 0; min-height: 160px; max-height: 60vh; margin: 0 auto; border-radius: 10px;
   background: #f4f4f5; border: 1px solid #e4e4e7; display: flex; align-items: center; justify-content: center;
   overflow: hidden;
 }
-.shot-viewer-media img { width: 100%; height: 100%; object-fit: contain; }
+.shot-viewer-media img { max-width: 100%; max-height: 60vh; width: auto; height: auto; object-fit: contain; border-radius: 8px; }
 .shot-viewer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: #71717a; }
+.shot-viewer-meta-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.shot-viewer-meta-actions .open-folder-btn { margin-top: 0; }
 .shot-viewer-filmstrip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
 .shot-viewer-thumb {
   flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px; border: 2px solid transparent; padding: 0;
@@ -5663,6 +5728,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* 每一对：竖版媒体预览在左(接近 9:16，因为 Seedance 默认出竖屏视频)，文字+按钮在右。
    预览框边框颜色跟随生成状态变化，按钮同理，两处配色呼应。 */
 .pair-row { display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start; }
+/* .pair-media 本身固定宽度+比例+overflow:hidden，"打开目录"按钮不能直接塞进去(会被
+   裁掉)，所以套一层纵向 flex 列，媒体框在上、按钮在下，这一列整体才是 .pair-row 的
+   flex 子项(取代原来直接放 .pair-media)。 */
+.pair-media-col { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
 .pair-media {
   width: 130px; aspect-ratio: 9 / 16; flex-shrink: 0; border: 2px solid #e4e4e7; border-radius: 8px;
   background: #f4f4f5; display: flex; align-items: center; justify-content: center; overflow: hidden;
@@ -6400,7 +6469,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .shot-stage-content { margin-bottom: 14px; padding: 12px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fbfbfd; }
 .ui-v2 .pair-row.shot-stage-content { display: block; }
-.ui-v2 .pair-row.shot-stage-content > .pair-media { display: none; }
+.ui-v2 .pair-row.shot-stage-content > .pair-media-col { display: none; }
 .ui-v2 .pair-row.shot-stage-content .pair-text { width: 100%; }
 .ui-v2 .pair-row.shot-stage-content .pair-media { width: 100%; }
 .ui-v2 .pair-row.shot-stage-content .pair-media-audio { min-height: 76px; aspect-ratio: auto; }
