@@ -278,6 +278,7 @@ function ensureUserDataDb(dbPath: string): void {
 function withWindowsCliPath(env: Record<string, string>): Record<string, string> {
   if (process.platform !== 'win32') return env
 
+  const inheritedPath = env.PATH ?? process.env.PATH ?? ''
   const candidateDirs = [
     process.env.APPDATA ? join(process.env.APPDATA, 'npm') : '',
     process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
@@ -288,7 +289,8 @@ function withWindowsCliPath(env: Record<string, string>): Record<string, string>
 
   return {
     ...env,
-    PATH: [...candidateDirs, process.env.PATH ?? ''].join(delimiter)
+    // Windows 上这些只是兜底目录，必须放在继承 PATH 后面，避免过期/未登录的 claude shim 抢先命中。
+    PATH: [inheritedPath, ...candidateDirs].filter(Boolean).join(delimiter)
   }
 }
 
