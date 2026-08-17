@@ -2690,47 +2690,64 @@ function statusLabel(status: string): string {
       <template v-if="settingsTab === 'general'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head"><div><h2>火山方舟模型配置</h2><p>配置 Seedream 出图和 Seedance 视频</p></div><span>必填</span></div>
-      <div class="field">
+      <!-- 之前每个字段都是 label 独占一行、输入框铺满整个 .settings-group 的宽度——
+           这个页面没设宽度上限(见上面 panel-wide 的说明)，宽屏上输入框会被拉得很长，
+           内容(一个模型ID/一个URL)用不了那么宽，右边留一大截空白，还要往下滚动才能
+           看完全部字段。改成 label+输入框一行(跟图生视频表单同一个思路)，外层再限一个
+           阅读宽度，两个问题一起解决：不再有多余留白，5个字段基本一屏就能看完。 -->
+      <div class="settings-compact-fields">
+      <div class="field settings-field-inline">
         <label>火山方舟 API Key <span class="field-badge">Seedream / Seedance</span></label>
-        <input
-          v-model="settingsForm.arkApiKey"
-          type="password"
-          :placeholder="settingsInfo.arkApiKeySet ? `当前已设置：${settingsInfo.arkApiKeyMasked}` : '还没设置'"
-        />
+        <div class="settings-field-inline-content">
+          <input
+            v-model="settingsForm.arkApiKey"
+            type="password"
+            :placeholder="settingsInfo.arkApiKeySet ? `当前已设置：${settingsInfo.arkApiKeyMasked}` : '还没设置'"
+          />
+        </div>
       </div>
-      <div class="field">
+      <div class="field settings-field-inline">
         <label>Ark Base URL</label>
-        <input v-model="settingsForm.arkBaseUrl" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
-        <p class="field-help">Plan 套餐可留空；按量账号填 <code>.../api/v3</code>。</p>
+        <div class="settings-field-inline-content">
+          <input v-model="settingsForm.arkBaseUrl" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
+          <p class="field-help">Plan 套餐可留空；按量账号填 <code>.../api/v3</code>。</p>
+        </div>
       </div>
-      <div class="field">
+      <div class="field settings-field-inline">
         <label>Seedance 视频模型 ID</label>
-        <input v-model="settingsForm.arkVideoModel" placeholder="doubao-seedance-2.0" />
-        <p class="field-help">留空用默认模型；不确定时填控制台里的推理接入点 <code>ep-xxxx</code>。</p>
-        <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
-          <ul class="hint model-ref-hint">
-            <li>Plan 套餐：<code>doubao-seedance-2.0</code> / <code>fast</code> / <code>mini</code>。</li>
-            <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
-            <li>具体可用型号以火山控制台「模型广场」为准。</li>
-          </ul>
-        </details>
+        <div class="settings-field-inline-content">
+          <input v-model="settingsForm.arkVideoModel" placeholder="doubao-seedance-2.0" />
+          <p class="field-help">留空用默认模型；不确定时填控制台里的推理接入点 <code>ep-xxxx</code>。</p>
+          <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
+            <ul class="hint model-ref-hint">
+              <li>Plan 套餐：<code>doubao-seedance-2.0</code> / <code>fast</code> / <code>mini</code>。</li>
+              <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
+              <li>具体可用型号以火山控制台「模型广场」为准。</li>
+            </ul>
+          </details>
+        </div>
       </div>
-      <div class="field">
+      <div class="field settings-field-inline">
         <label>Seedream 图片模型 ID</label>
-        <input v-model="settingsForm.arkImageModel" placeholder="doubao-seedream-5.0-lite" />
-        <p class="field-help">留空用默认模型；追求质量可改 pro。</p>
-        <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
-          <ul class="hint model-ref-hint">
-            <li>Plan 套餐：<code>doubao-seedream-5.0-lite</code> 或 <code>pro</code>。</li>
-            <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
-            <li>具体可用型号以火山控制台「模型广场」为准。</li>
-          </ul>
-        </details>
+        <div class="settings-field-inline-content">
+          <input v-model="settingsForm.arkImageModel" placeholder="doubao-seedream-5.0-lite" />
+          <p class="field-help">留空用默认模型；追求质量可改 pro。</p>
+          <details class="settings-doc"><summary>模型 ID 怎么填？</summary>
+            <ul class="hint model-ref-hint">
+              <li>Plan 套餐：<code>doubao-seedream-5.0-lite</code> 或 <code>pro</code>。</li>
+              <li>按量账号：填控制台快照 ID 或 <code>ep-xxxxxxxx</code>。</li>
+              <li>具体可用型号以火山控制台「模型广场」为准。</li>
+            </ul>
+          </details>
+        </div>
       </div>
-      <div class="field">
+      <div class="field settings-field-inline">
         <label>Ark 文本对话模型 ID <span class="field-badge">"AI优化提示词"用</span></label>
-        <input v-model="settingsForm.arkTextModel" placeholder="比如 doubao-seed-1.6" />
-        <p class="field-help">留空则使用「AI生成剧本配置」；填写后优先走 Ark。</p>
+        <div class="settings-field-inline-content">
+          <input v-model="settingsForm.arkTextModel" placeholder="比如 doubao-seed-1.6" />
+          <p class="field-help">留空则使用「AI生成剧本配置」；填写后优先走 Ark。</p>
+        </div>
+      </div>
       </div>
       </section>
       </template>
@@ -4828,6 +4845,14 @@ body {
 .field, .field-row { margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
 .field-row { flex-direction: row; align-items: flex-start; }
 .field label { font-size: 13px; color: #52525b; }
+
+/* 设置页里"一行一个短字段"的紧凑表单：外层限个阅读宽度，不让输入框跟着整个页面
+   宽度拉伸；label 和输入框同一行，比每个字段占两行(label 一行、输入框一行)省一半
+   竖直空间，宽屏/窄屏都不会有大片空白或需要多滚动。 */
+.settings-compact-fields { max-width: 640px; }
+.settings-field-inline { flex-direction: row; align-items: baseline; gap: 14px; }
+.settings-field-inline > label { flex-shrink: 0; width: 168px; padding-top: 7px; }
+.settings-field-inline > .settings-field-inline-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .model-ref-hint { line-height: 1.6; }
 .model-ref-hint code {
   font-family: ui-monospace, monospace; font-size: 11px; color: #3f6212; background: #f0fdf4;
