@@ -6,8 +6,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db import get_connection, get_settings, new_id
+from app.services import batch_generation
 from app.services.paths import to_static_url
 from app.services.story_generator import StoryGenerationError, generate_story_scenes
+
+_PROJECT_LIST_COLUMNS = (
+    'id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt'
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -104,8 +109,7 @@ def create_project(body: CreateProjectBody):
 def list_projects():
     with get_connection() as conn:
         rows = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
-            'FROM "Project" ORDER BY createdAt DESC'
+            f'SELECT {_PROJECT_LIST_COLUMNS} FROM "Project" ORDER BY createdAt DESC'
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -126,8 +130,7 @@ def update_project(project_id: str, body: UpdateProjectBody):
         set_clause = ", ".join(f'"{k}" = ?' for k in fields)
         conn.execute(f'UPDATE "Project" SET {set_clause} WHERE id = ?', (*fields.values(), project_id))
         row = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
-            'FROM "Project" WHERE id = ?',
+            f'SELECT {_PROJECT_LIST_COLUMNS} FROM "Project" WHERE id = ?',
             (project_id,),
         ).fetchone()
     return dict(row)
@@ -137,8 +140,7 @@ def update_project(project_id: str, body: UpdateProjectBody):
 def get_project(project_id: str):
     with get_connection() as conn:
         project = conn.execute(
-            'SELECT id, title, premise, status, styleMode, contentType, aspectRatio, createdAt, lastExportedAt '
-            'FROM "Project" WHERE id = ?',
+            f'SELECT {_PROJECT_LIST_COLUMNS} FROM "Project" WHERE id = ?',
             (project_id,),
         ).fetchone()
         if project is None:
@@ -324,6 +326,85 @@ def generate_story(project_id: str):
     thread.start()
 
     return {"storyId": story_id, "status": "running"}
+
+
+def _get_story_id_or_404(conn, project_id: str) -> str:
+    story = conn.execute('SELECT id FROM "Story" WHERE projectId = ?', (project_id,)).fetchone()
+    if story is None:
+        raise HTTPException(404, "项目不存在或缺少 Story 记录")
+    return story["id"]
+
+
+@router.post("/{project_id}/characters/generate-all")
+def generate_all_characters(project_id: str):
+    """角色一键生成：批量把这个项目里所有还没生成完成的角色都触发一遍(内部有限并发)，
+    跟一个一个点角色库卡片上的「生成」效果一样，只是一次点完。接口立刻返回，各角色
+    的生成进度看 GET /projects/{project_id}/characters 里每个角色自己的 status。
+    """
+    with get_connection() as conn:
+        _get_story_id_or_404(conn, project_id)
+    thread = threading.Thread(target=batch_generation.generate_all_characters, args=(project_id,), daemon=True)
+    thread.start()
+    return {"projectId": project_id, "status": "running"}
+
+
+@router.post("/{project_id}/scenes/generate-all")
+def generate_all_scenes(project_id: str):
+    """场景参考图一键生成：批量把这个项目里所有还没生成完成的场次参考图都触发一遍。"""
+    with get_connection() as conn:
+        story_id = _get_story_id_or_404(conn, project_id)
+    thread = threading.Thread(target=batch_generation.generate_all_scenes, args=(story_id,), daemon=True)
+    thread.start()
+    return {"projectId": project_id, "status": "running"}
+
+
+@router.post("/{project_id}/shots/generate-all-images")
+def generate_all_shot_images(project_id: str):
+    """分镜图片一键生成：批量给这个项目里所有"还没有一张已完成图片"的镜头触发生成
+    (单张模式，不是批量候选)，跟手动一镜一镜点「生成图片」效果一样，只是一次性把还
+    没弄的都点一遍。已经有完成图片的镜头不会被打扰/不会被覆盖——想换图还是去编辑
+    模式里手动点重新生成。接口立刻返回，各镜头的生成进度看 GET /projects/{id} 里
+    对应 shot 的素材状态(前端轮询 assets 接口)。
+    """
+    with get_connection() as conn:
+        story_id = _get_story_id_or_404(conn, project_id)
+    thread = threading.Thread(
+        target=batch_generation.generate_all_shot_assets, args=(story_id, "image"), daemon=True
+    )
+    thread.start()
+    return {"projectId": project_id, "status": "running"}
+
+
+@router.post("/{project_id}/shots/generate-all-videos")
+def generate_all_shot_videos(project_id: str):
+    """分镜视频一键生成：批量给所有"还没有一条已完成视频"的镜头触发生成。视频生成
+    没传起始帧时会自动取该镜头最近一次生成完成的图片素材当首帧，所以建议先用
+    「分镜图片一键生成」把图片都出完、看着满意了，再点这个——不会强制校验顺序，
+    图片还没出的镜头这里也会尝试生成，只是会因为找不到首帧而失败，跟手动点"生成
+    视频"在没图时会报错是同一个提示。
+    """
+    with get_connection() as conn:
+        story_id = _get_story_id_or_404(conn, project_id)
+    thread = threading.Thread(
+        target=batch_generation.generate_all_shot_assets, args=(story_id, "video"), daemon=True
+    )
+    thread.start()
+    return {"projectId": project_id, "status": "running"}
+
+
+@router.post("/{project_id}/shots/generate-all-voices")
+def generate_all_shot_voices(project_id: str):
+    """配音一键生成：批量给所有"有台词(dialogue 非空)但还没有一条已完成配音"的镜头
+    触发生成。没填台词的镜头本来就没什么可配的，直接跳过，不会占位生成一条空配音
+    也不会报错刷屏。
+    """
+    with get_connection() as conn:
+        story_id = _get_story_id_or_404(conn, project_id)
+    thread = threading.Thread(
+        target=batch_generation.generate_all_shot_assets, args=(story_id, "voice"), daemon=True
+    )
+    thread.start()
+    return {"projectId": project_id, "status": "running"}
 
 
 @router.post("/{project_id}/story/import")

@@ -105,6 +105,37 @@ def _resolve_scene_reference_path(conn, shot: dict) -> Optional[str]:
     return scene["refImagePath"]
 
 
+def _prepare_running_asset(conn, shot_id: str, kind: str) -> tuple[str, str]:
+    """单素材模式的 Asset/Task 行准备：已有就原地置回 running 复用同一行 id，没有就新插入
+    一行——保证"同一个 shot+kind 复用同一行"的语义（跟批量候选模式的多行插入不一样）。
+    trigger_asset_generation 的 count=1 分支、以及"AI一键生成全片"编排器
+    (app/services/auto_pipeline.py，只会单张单张触发，不走批量候选)都靠这个来触发生成，
+    抽出来避免两处各写一份容易走样的重复逻辑。
+    """
+    existing = conn.execute(
+        'SELECT id FROM "Asset" WHERE shotId = ? AND type = ?', (shot_id, kind)
+    ).fetchone()
+    if existing:
+        asset_id = existing["id"]
+        conn.execute(
+            'UPDATE "Asset" SET status = ?, error = NULL WHERE id = ?',
+            ("running", asset_id),
+        )
+    else:
+        asset_id = new_id()
+        conn.execute(
+            'INSERT INTO "Asset" (id, shotId, type, status) VALUES (?, ?, ?, ?)',
+            (asset_id, shot_id, kind, "running"),
+        )
+    task_id = new_id()
+    conn.execute(
+        'INSERT INTO "Task" (id, targetType, targetId, kind, status, updatedAt) '
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (task_id, kind, shot_id, kind, "running", now_iso()),
+    )
+    return asset_id, task_id
+
+
 def _run_generation(shot_id: str, kind: str, asset_id: str, task_id: str, body: GenerateAssetBody) -> None:
     """在后台线程跑真正的生成调用，独立开 DB 连接，结束后把结果/报错写回 Asset 和 Task。"""
     try:
@@ -273,27 +304,7 @@ def trigger_asset_generation(
                 items.append({"assetId": asset_id, "taskId": task_id})
         else:
             # 单素材模式（原有行为不变）：原地覆盖同一行，一直是隐含的"选中"状态。
-            existing = conn.execute(
-                'SELECT id FROM "Asset" WHERE shotId = ? AND type = ?', (shot_id, kind)
-            ).fetchone()
-            if existing:
-                asset_id = existing["id"]
-                conn.execute(
-                    'UPDATE "Asset" SET status = ?, error = NULL WHERE id = ?',
-                    ("running", asset_id),
-                )
-            else:
-                asset_id = new_id()
-                conn.execute(
-                    'INSERT INTO "Asset" (id, shotId, type, status) VALUES (?, ?, ?, ?)',
-                    (asset_id, shot_id, kind, "running"),
-                )
-            task_id = new_id()
-            conn.execute(
-                'INSERT INTO "Task" (id, targetType, targetId, kind, status, updatedAt) '
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (task_id, kind, shot_id, kind, "running", now_iso()),
-            )
+            asset_id, task_id = _prepare_running_asset(conn, shot_id, kind)
             items.append({"assetId": asset_id, "taskId": task_id})
 
     for item in items:
