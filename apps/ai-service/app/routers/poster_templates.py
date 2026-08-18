@@ -12,7 +12,7 @@ from app.db import get_connection, new_id, now_iso
 # (Poster.promptText/templateLabel 是生成当下复制的快照，不是引用)。
 router = APIRouter(prefix="/poster-templates", tags=["poster-templates"])
 
-LayoutMode = Literal["title", "textBlocks"]
+LayoutMode = Literal["title", "textBlocks", "infographic"]
 
 
 def _serialize(row) -> dict:
@@ -29,9 +29,7 @@ def list_poster_templates():
 class CreatePosterTemplateBody(BaseModel):
     label: str
     promptText: str
-    # title: 标题+副标题两行字，适合宣传氛围类海报；textBlocks: 标题+任意多行正文，
-    # 适合价格表/知识卡片这种需要精确罗列具体文字内容的场景。只是给前端一个默认值，
-    # 生成海报时用户仍然可以在创建表单里调整。
+    # title: 标题+副标题；textBlocks: 多行正文；infographic: 攻略/科普/对比类复杂卡片海报。
     layoutMode: LayoutMode = "title"
 
 

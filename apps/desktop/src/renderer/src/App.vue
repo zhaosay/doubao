@@ -23,7 +23,17 @@ interface AiManjuBridge {
   downloadUpdate?: () => Promise<AppUpdateStatus>
   installUpdate?: () => Promise<AppUpdateStatus>
   openLatestRelease?: () => Promise<boolean>
+  getAiServiceStatus?: () => Promise<AiServiceStatus>
+  restartAiService?: () => Promise<AiServiceStatus>
   onUpdateStatus?: (callback: (status: AppUpdateStatus) => void) => () => void
+}
+
+interface AiServiceStatus {
+  state: 'starting' | 'running' | 'stopped' | 'error'
+  port: number
+  pid: number | null
+  message: string
+  lastError: string
 }
 
 interface AppUpdateStatus {
@@ -44,6 +54,26 @@ const apiBaseUrl = aiManjuBridge?.apiBaseUrl ?? 'http://127.0.0.1:8000'
 // 基础规则上面的覆盖层，不是完全独立的一套样式，删了 V1 基础规则会连带把 V2 弄坏）。
 type UiVersion = 'v2'
 const uiVersion = ref<UiVersion>('v2')
+type UiTheme = 'vue' | 'classic'
+const UI_THEME_STORAGE_KEY = 'aiManjuUiTheme'
+
+function readUiTheme(): UiTheme {
+  try {
+    return localStorage.getItem(UI_THEME_STORAGE_KEY) === 'vue' ? 'vue' : 'classic'
+  } catch {
+    return 'classic'
+  }
+}
+
+const uiTheme = ref<UiTheme>(readUiTheme())
+
+watch(uiTheme, (theme) => {
+  try {
+    localStorage.setItem(UI_THEME_STORAGE_KEY, theme)
+  } catch {
+    // 浏览器隐私模式/localStorage 不可写时忽略；当前这次切换仍然会立即生效。
+  }
+})
 
 // 双击缩略图用系统默认程序打开原文件（跟 Finder 里双击一样）。openPath 走 Electron
 // IPC，只有跑在真正的 Electron 壳里才有；纯浏览器打开这个页面调试时 aiManjuBridge
@@ -283,7 +313,7 @@ interface PosterOrientationOption {
   label: string
 }
 
-type PosterLayoutMode = 'title' | 'textBlocks'
+type PosterLayoutMode = 'title' | 'textBlocks' | 'infographic'
 
 interface PosterTemplateItem {
   id: string
@@ -428,6 +458,8 @@ function removeCharacterName(shot: Shot, name: string): void {
 }
 
 const apiStatus = ref<ApiStatus>('checking')
+const apiStatusDetail = ref('正在启动本地服务...')
+const restartingAiService = ref(false)
 const view = ref<View>('projects')
 // "项目"页原来是"新建项目"表单和"项目列表"堆在同一屏，创建表单本身就占了两步(模板+简介)，
 // 跟列表挤在一起显得很长。拆成两个 tab，默认停在列表——大部分时候是回来找已有项目，
@@ -469,13 +501,12 @@ const settingsInfo = reactive({
 const settingsSaving = ref(false)
 const settingsSavedAt = ref<string | null>(null)
 const settingsError = ref<string | null>(null)
-// 设置页原来是一长条竖着滚下去的表单，改成选项卡分区看着更清楚：
-// 火山方舟模型配置 / AI生成剧本配置 / IndexTTS 配音配置 / 生成与导出(目录+导出+海报字体) /
-// 提示词与模板(4个自定义提示词分组) / 关于(版本更新)。"保存全部设置"按钮不分tab，
-// 固定在页面底部，切哪个tab都能一次性保存所有字段(后端本来就是整份 PUT)。
-type SettingsTab = 'general' | 'story' | 'indextts' | 'generation' | 'prompts' | 'about'
+// 设置页用选项卡分区：界面主题单独列出，避免每个设置页顶部都常驻一大块主题卡片。
+// "保存全部设置"按钮不分 tab，切哪个 tab 都能一次性保存所有字段。
+type SettingsTab = 'theme' | 'general' | 'story' | 'indextts' | 'generation' | 'prompts' | 'about'
 const settingsTab = ref<SettingsTab>('general')
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'theme', label: '界面主题' },
   { id: 'general', label: '火山方舟模型配置' },
   { id: 'story', label: 'AI生成剧本配置' },
   { id: 'indextts', label: 'IndexTTS 配音配置' },
@@ -731,6 +762,10 @@ const posterOrientations = ref<PosterOrientationOption[]>([])
 let posterOrientationsLoaded = false
 const posterTemplates = ref<PosterTemplateItem[]>([])
 const postersTab = ref<'list' | 'create'>('list')
+const DEFAULT_POSTER_ORIENTATIONS: PosterOrientationOption[] = [
+  { id: 'portrait', label: '竖版 3:4' },
+  { id: 'landscape', label: '横版 16:9' }
+]
 const posterForm = reactive({
   orientation: 'portrait' as string,
   // 空字符串 = 不选模版，走"自定义"分支，下面 promptText/layoutMode 才生效。
@@ -773,6 +808,52 @@ function bodyLinesFromText(text: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
+}
+
+function samplePosterBodyLines(layoutMode: PosterLayoutMode, label = ''): string {
+  if (layoutMode === 'infographic') {
+    if (label.includes('交通')) {
+      return [
+        '# 地铁',
+        '价格：约 1400 韩元起',
+        '优点：最快捷、省钱、线路多',
+        '缺点：高峰人多，带行李不方便',
+        '# 大巴/公交',
+        '价格：约 1200 韩元起',
+        '优点：覆盖广，可以看风景',
+        '缺点：容易堵车，需要看清方向',
+        '# 出租车',
+        '价格：起步约 4800 韩元',
+        '优点：门到门，适合夜间和多人',
+        '小贴士：建议用 Kakao T / Uber 叫车',
+      ].join('\n')
+    }
+    return [
+      '# 必看重点',
+      '位置：江南站附近，交通方便',
+      '适合：第一次到韩国、想省心安排行程的人',
+      '提醒：提前确认营业时间和路线',
+      '# 推荐路线',
+      '上午：地铁到达目的地',
+      '中午：附近美食打卡',
+      '下午：购物/咨询/拍照',
+      '# 小贴士',
+      '准备：护照、预约信息、翻译截图',
+      '支付：现金、银行卡、移动支付都建议准备',
+      '语言：热门区域一般有中文服务',
+    ].join('\n')
+  }
+  if (layoutMode === 'textBlocks') {
+    return ['项目一|价格/说明', '项目二|价格/说明', '项目三|价格/说明'].join('\n')
+  }
+  return ''
+}
+
+function selectPosterTemplate(tpl: PosterTemplateItem): void {
+  posterForm.templateId = tpl.id
+  if ((tpl.layoutMode === 'textBlocks' || tpl.layoutMode === 'infographic') && !posterForm.bodyLinesText.trim()) {
+    posterForm.bodyLinesText = samplePosterBodyLines(tpl.layoutMode, tpl.label)
+  }
 }
 
 // ---- 视频生成（无剧本，上传参考图直接生成视频）----
@@ -845,9 +926,40 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 async function checkHealth(): Promise<void> {
   try {
     const res = await fetch(`${apiBaseUrl}/health`)
-    apiStatus.value = res.ok ? 'ok' : 'error'
-  } catch {
+    if (res.ok) {
+      apiStatus.value = 'ok'
+      apiStatusDetail.value = `本地服务正常：${apiBaseUrl}/health`
+    } else {
+      const text = await res.text().catch(() => '')
+      apiStatus.value = 'error'
+      apiStatusDetail.value = `健康检查失败：HTTP ${res.status}${text ? ` · ${text.slice(0, 120)}` : ''}`
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
     apiStatus.value = 'error'
+    const serviceStatus = await aiManjuBridge?.getAiServiceStatus?.().catch(() => null)
+    const serviceDetail = serviceStatus
+      ? `；进程状态：${serviceStatus.message}${serviceStatus.pid ? `，PID ${serviceStatus.pid}` : ''}${serviceStatus.lastError ? `；最近日志：${serviceStatus.lastError}` : ''}`
+      : ''
+    apiStatusDetail.value = `无法连接 ${apiBaseUrl}/health：${detail}${serviceDetail}`
+  }
+}
+
+async function restartLocalService(): Promise<void> {
+  if (!aiManjuBridge?.restartAiService) return
+  restartingAiService.value = true
+  apiStatus.value = 'checking'
+  apiStatusDetail.value = '正在重新启动本地服务...'
+  try {
+    const serviceStatus = await aiManjuBridge.restartAiService()
+    apiStatusDetail.value = serviceStatus.message
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await checkHealth()
+  } catch (err) {
+    apiStatus.value = 'error'
+    apiStatusDetail.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    restartingAiService.value = false
   }
 }
 
@@ -1199,10 +1311,11 @@ async function loadPosterOrientations(): Promise<void> {
   if (posterOrientationsLoaded) return
   try {
     const data = await api<{ orientations: PosterOrientationOption[] }>('/posters/options')
-    posterOrientations.value = data.orientations
+    posterOrientations.value = data.orientations.length > 0 ? data.orientations : DEFAULT_POSTER_ORIENTATIONS
     posterOrientationsLoaded = true
   } catch {
-    // 静默失败：创建海报表单里的朝向选择器会是空的，用户能看出来，不用额外弹错误。
+    // 后端刚启动/接口临时失败时，也不能让"画布方向"整块变空；海报方向本来就是固定枚举。
+    posterOrientations.value = DEFAULT_POSTER_ORIENTATIONS
   }
 }
 
@@ -1233,9 +1346,10 @@ async function createPoster(): Promise<void> {
   posterError.value = null
 
   const layoutMode = effectivePosterLayoutMode.value
-  const bodyLines = layoutMode === 'textBlocks' ? bodyLinesFromText(posterForm.bodyLinesText) : []
-  if (layoutMode === 'textBlocks' && bodyLines.length === 0) {
-    posterError.value = '多行正文排版至少要填一行内容'
+  const usesBodyLines = layoutMode === 'textBlocks' || layoutMode === 'infographic'
+  const bodyLines = usesBodyLines ? bodyLinesFromText(posterForm.bodyLinesText) : []
+  if (usesBodyLines && bodyLines.length === 0) {
+    posterError.value = '正文排版至少要填一行内容'
     return
   }
   if (!posterForm.templateId && !posterForm.promptText.trim()) {
@@ -1252,7 +1366,7 @@ async function createPoster(): Promise<void> {
         templateId: posterForm.templateId || null,
         promptText: posterForm.templateId ? null : posterForm.promptText.trim(),
         layoutMode,
-        bodyLines: layoutMode === 'textBlocks' ? bodyLines : null,
+        bodyLines: usesBodyLines ? bodyLines : null,
         styleMode: posterForm.styleMode,
         title: posterForm.title.trim(),
         subtitle: posterForm.subtitle.trim() || null,
@@ -1335,7 +1449,7 @@ async function savePosterText(posterId: string): Promise<void> {
       title: editingPosterForm.title.trim(),
       subtitle: editingPosterForm.subtitle.trim()
     }
-    if (poster?.layoutMode === 'textBlocks') {
+    if (poster?.layoutMode === 'textBlocks' || poster?.layoutMode === 'infographic') {
       body.bodyLines = bodyLinesFromText(editingPosterForm.bodyLinesText)
     }
     await api(`/posters/${posterId}`, { method: 'PATCH', body: JSON.stringify(body) })
@@ -1955,6 +2069,25 @@ function sceneProgressComplete(scene: Scene): boolean {
 // 详情面板里的镜头胶片条：跟场次网格同一个道理，选中哪个镜头才展开哪个的完整编辑表单，
 // 不再把这场戏所有镜头的表单一次性堆出来。
 const activeShotId = ref<string | null>(null)
+type ShotUiMode = 'simple' | 'advanced'
+const SHOT_UI_MODE_STORAGE_KEY = 'aiManjuShotUiMode'
+
+function readShotUiMode(): ShotUiMode {
+  try {
+    return localStorage.getItem(SHOT_UI_MODE_STORAGE_KEY) === 'advanced' ? 'advanced' : 'simple'
+  } catch {
+    return 'simple'
+  }
+}
+
+const shotUiMode = ref<ShotUiMode>(readShotUiMode())
+watch(shotUiMode, (mode) => {
+  try {
+    localStorage.setItem(SHOT_UI_MODE_STORAGE_KEY, mode)
+  } catch {
+    // 桌面壳一般可用；浏览器隐私模式不可写时忽略，不影响当前页面使用。
+  }
+})
 
 function ensureValidShotSelection(): void {
   const shots = activeScene.value?.shots ?? []
@@ -2014,8 +2147,7 @@ async function batchGenerateAsset(scene: Scene, kind: 'image' | 'video' | 'voice
   }
 }
 
-// 生成状态统一配色：红=未完成(待处理)、蓝=生成中、绿=已完成、红=失败——未完成和失败
-// 都用红色提醒需要处理，用在生成按钮、预览框边框、缩略行的状态点上，样式互相呼应。
+// 生成状态统一配色：灰=待处理、蓝=生成中、绿=已完成、红=失败。
 function statusColorClass(status: string | null | undefined): string {
   switch (status) {
     case 'running':
@@ -2421,6 +2553,12 @@ watch(
   }
 )
 
+const overviewShots = computed(() =>
+  (activeProject.value?.scenes ?? []).flatMap((scene, sceneIndex) =>
+    scene.shots.map((shot) => ({ scene, sceneIndex, shot }))
+  )
+)
+
 function jumpToCharactersEdit(): void {
   projectViewMode.value = 'edit'
   activeStep.value = 'characters'
@@ -2711,7 +2849,7 @@ function statusLabel(status: string): string {
 </script>
 
 <template>
-  <div class="shell" :class="`ui-${uiVersion}`">
+  <div class="shell" :class="[`ui-${uiVersion}`, `theme-${uiTheme}`]">
     <aside class="sidebar">
       <div class="sidebar-brand" title="AI视频工作台" aria-label="AI视频工作台">
         <img class="sidebar-brand-logo" :src="appLogoUrl" alt="" />
@@ -2794,7 +2932,19 @@ function statusLabel(status: string): string {
         <strong>{{ activeProject.title }}</strong>
       </div>
       <div class="sidebar-footer">
-        <span class="api-status" :class="apiStatus">后端 {{ apiStatus }}</span>
+        <span class="api-status" :class="apiStatus" :title="apiStatusDetail">
+          本地服务 {{ apiStatus === 'ok' ? '正常' : apiStatus === 'checking' ? '启动中' : '异常' }}
+        </span>
+        <span v-if="apiStatus === 'error'" class="api-status-detail" :title="apiStatusDetail">{{ apiStatusDetail }}</span>
+        <button
+          v-if="apiStatus === 'error' && aiManjuBridge?.restartAiService"
+          type="button"
+          class="ghost api-restart-button"
+          :disabled="restartingAiService"
+          @click="restartLocalService"
+        >
+          {{ restartingAiService ? '重启中…' : '重启本地服务' }}
+        </button>
       </div>
     </aside>
 
@@ -2824,6 +2974,35 @@ function statusLabel(status: string): string {
           {{ tab.label }}
         </button>
       </div>
+
+      <template v-if="settingsTab === 'theme'">
+      <section class="settings-theme-card settings-group-primary">
+        <div>
+          <strong>界面主题</strong>
+          <p class="hint">只改颜色，不影响项目、模型和生成结果。</p>
+        </div>
+        <div class="theme-switcher" role="group" aria-label="界面主题">
+          <button
+            type="button"
+            class="theme-option theme-option-classic"
+            :class="{ active: uiTheme === 'classic' }"
+            @click="uiTheme = 'classic'"
+          >
+            <span class="theme-dot"></span>
+            经典灰白
+          </button>
+          <button
+            type="button"
+            class="theme-option theme-option-vue"
+            :class="{ active: uiTheme === 'vue' }"
+            @click="uiTheme = 'vue'"
+          >
+            <span class="theme-dot"></span>
+            Vue 色系
+          </button>
+        </div>
+      </section>
+      </template>
 
       <template v-if="settingsTab === 'about'">
       <section class="settings-group settings-group-update">
@@ -3249,10 +3428,10 @@ function statusLabel(status: string): string {
 
       <template v-if="projectsTab === 'create'">
         <div class="project-create-panel">
-        <div class="project-create-head"><div><h2>新建项目</h2><p class="hint">选择最接近的项目模板，之后仍可调整</p></div><span>两步完成</span></div>
+        <div class="project-create-head"><div><h2>新建短剧</h2><p class="hint">选择最接近的短剧模板，之后仍可调整</p></div><span>两步完成</span></div>
         <div class="field-row project-create-form">
           <div class="project-create-config">
-            <div class="project-create-step-title"><span>1</span><div><strong>选择项目模板</strong><small>自动配置内容类型与出图风格</small></div></div>
+            <div class="project-create-step-title"><span>1</span><div><strong>选择短剧模板</strong><small>自动配置内容类型与出图风格</small></div></div>
             <div class="project-template-grid">
               <button
                 v-for="tpl in effectiveProjectTemplates"
@@ -3289,7 +3468,7 @@ function statusLabel(status: string): string {
               </label>
             </div>
           </div>
-          <div class="project-create-step-title"><span>2</span><div><strong>填写项目内容</strong><small>用一句话说明想要生成的故事或视频</small></div></div>
+          <div class="project-create-step-title"><span>2</span><div><strong>填写短剧内容</strong><small>用一句话说明想要生成的故事或视频</small></div></div>
           <div class="project-create-input-row">
             <textarea v-model="newPremise" placeholder="一句话故事简介，比如：雨夜里久别重逢的两个人" rows="2" />
             <button :disabled="creatingProject || !canCreateProject" @click="createProject">
@@ -3303,11 +3482,11 @@ function statusLabel(status: string): string {
 
       <template v-else>
         <div class="list-head project-list-head">
-          <h2 style="margin: 0">项目列表</h2>
-          <span class="hint">{{ projects.length }} 个项目</span>
+          <h2 style="margin: 0">全部短剧</h2>
+          <span class="hint">{{ projects.length }} 个短剧</span>
         </div>
         <p v-if="projects.length === 0" class="hint">
-          还没有项目，先切到「新建项目」创建一个吧（如果你确定之前创建过，点"刷新列表"再看看）
+          还没有短剧，先切到「新建短剧」创建一个吧（如果你确定之前创建过，点"刷新列表"再看看）
         </p>
         <ul class="project-list">
           <li v-for="(p, idx) in projects" :key="p.id" @click="editingProjectId === p.id ? undefined : openProject(p.id)">
@@ -3377,7 +3556,7 @@ function statusLabel(status: string): string {
                 type="button"
                 class="project-template-card poster-template-card"
                 :class="{ active: posterForm.templateId === tpl.id }"
-                @click="posterForm.templateId = tpl.id"
+                @click="selectPosterTemplate(tpl)"
               >
                 <span class="project-template-check">{{ posterForm.templateId === tpl.id ? '✓' : '' }}</span>
                 <strong>{{ tpl.label }}</strong>
@@ -3406,7 +3585,7 @@ function statusLabel(status: string): string {
                   type="button"
                   class="ghost ai-optimize-button"
                   :disabled="promptOptimizeState('posterPrompt').optimizing"
-                  @click="optimizePromptField('posterPrompt', posterForm.promptText, '海报背景画面描述', (v) => (posterForm.promptText = v))"
+                  @click="optimizePromptField('posterPrompt', posterForm.promptText, '火山方舟 Seedream 海报背景画面描述，文字由程序后期排版，不要让模型直接生成中文文字', (v) => (posterForm.promptText = v))"
                 >
                   {{ promptOptimizeState('posterPrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
                 </button>
@@ -3418,6 +3597,7 @@ function statusLabel(status: string): string {
               <div class="style-mode-picker">
                 <label><input type="radio" value="title" v-model="posterForm.layoutMode" /> 标题+副标题</label>
                 <label><input type="radio" value="textBlocks" v-model="posterForm.layoutMode" /> 多行正文（价格表/知识点）</label>
+                <label><input type="radio" value="infographic" v-model="posterForm.layoutMode" /> 信息图/攻略卡片</label>
               </div>
             </div>
             <div class="field">
@@ -3445,12 +3625,18 @@ function statusLabel(status: string): string {
             <label>副标题<span class="field-badge">可选</span></label>
             <input v-model="posterForm.subtitle" placeholder="比如：仅供参考，以到院咨询为准" />
           </div>
-          <div class="field" v-if="effectivePosterLayoutMode === 'textBlocks'">
-            <label>正文<span class="field-badge">每行一条，价格类可写"项目名|价格"，价格会自动右对齐</span></label>
+          <div class="field" v-if="effectivePosterLayoutMode === 'textBlocks' || effectivePosterLayoutMode === 'infographic'">
+            <label>
+              正文
+              <span v-if="effectivePosterLayoutMode === 'textBlocks'" class="field-badge">每行一条，价格类可写"项目名|价格"</span>
+              <span v-else class="field-badge">用 "# 分区标题" 分组，适合攻略/对比/科普</span>
+            </label>
             <textarea
               v-model="posterForm.bodyLinesText"
-              rows="5"
-              placeholder="双眼皮手术|8000元起&#10;热玛吉全脸|12000元起&#10;水光针基础款|1500元起"
+              rows="8"
+              :placeholder="effectivePosterLayoutMode === 'infographic'
+                ? '# 地铁\\n价格：约 1400 韩元起\\n优点：最快捷、最省钱、线路多\\n缺点：高峰人多，带行李不方便\\n# 出租车\\n价格：起步约 4800 韩元\\n优点：门到门，适合夜间和多人\\n小贴士：建议用 Kakao T / Uber 叫车'
+                : '双眼皮手术|8000元起\\n热玛吉全脸|12000元起\\n水光针基础款|1500元起'"
             />
           </div>
           </section>
@@ -3503,7 +3689,7 @@ function statusLabel(status: string): string {
               <div class="poster-preview-copy">
                 <strong>{{ posterForm.title || '海报标题' }}</strong>
                 <span v-if="posterForm.subtitle || effectivePosterLayoutMode === 'title'">{{ posterForm.subtitle || '副标题' }}</span>
-                <ul v-if="effectivePosterLayoutMode === 'textBlocks'">
+                <ul v-if="effectivePosterLayoutMode === 'textBlocks' || effectivePosterLayoutMode === 'infographic'">
                   <li v-for="(line, idx) in bodyLinesFromText(posterForm.bodyLinesText).slice(0, 6)" :key="idx">{{ line }}</li>
                 </ul>
               </div>
@@ -3535,7 +3721,7 @@ function statusLabel(status: string): string {
                 <input v-model="editingPosterForm.title" placeholder="标题" />
                 <input v-model="editingPosterForm.subtitle" placeholder="副标题" />
                 <textarea
-                  v-if="poster.layoutMode === 'textBlocks'"
+                  v-if="poster.layoutMode === 'textBlocks' || poster.layoutMode === 'infographic'"
                   v-model="editingPosterForm.bodyLinesText"
                   rows="4"
                   placeholder="每行一条，可用｜分隔价格"
@@ -3617,7 +3803,7 @@ function statusLabel(status: string): string {
                 type="button"
                 class="ghost ai-optimize-button"
                 :disabled="promptOptimizeState('videoGenPrompt').optimizing"
-                @click="optimizePromptField('videoGenPrompt', videoGenForm.prompt, '图生视频的画面/运镜描述', (v) => (videoGenForm.prompt = v))"
+                @click="optimizePromptField('videoGenPrompt', videoGenForm.prompt, '火山方舟 Seedance 图生视频运镜描述，需要包含镜头运动、主体动作、节奏和画面稳定性', (v) => (videoGenForm.prompt = v))"
               >
                 {{ promptOptimizeState('videoGenPrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
               </button>
@@ -3716,7 +3902,7 @@ function statusLabel(status: string): string {
                   type="button"
                   class="ghost ai-optimize-button"
                   :disabled="promptOptimizeState('textImagePrompt').optimizing"
-                  @click="optimizePromptField('textImagePrompt', textImageForm.prompt, '文生图画面描述', (v) => (textImageForm.prompt = v))"
+                  @click="optimizePromptField('textImagePrompt', textImageForm.prompt, '火山方舟 Seedream 文生图画面描述，需要强化主体、构图、光线、色调、材质和负面约束', (v) => (textImageForm.prompt = v))"
                 >
                   {{ promptOptimizeState('textImagePrompt').optimizing ? '优化中…' : 'AI优化提示词' }}
                 </button>
@@ -3967,7 +4153,7 @@ function statusLabel(status: string): string {
 
         <section class="overview-section">
           <div class="overview-section-head">
-            <h3>场次与分镜一览</h3>
+            <h3>全部镜头预览</h3>
             <div class="overview-section-actions">
               <button class="ghost" :disabled="batchRunning.scenes || anySceneRunning" @click="generateAllScenes">
                 <span v-if="batchRunning.scenes || anySceneRunning" class="btn-spinner"></span>
@@ -3980,29 +4166,20 @@ function statusLabel(status: string): string {
             </div>
           </div>
           <p class="hint overview-hint">
-            每场戏的场景参考图和这场戏的所有分镜画面放在一起，方便一眼判断背景/光线是否连贯；
-            点分镜缩略图可以放大看、左右切到同场次其它镜头对比。
+            所有镜头一次性平铺展示，卡片上只看预览；生成/重新生成放在卡片底部文字按钮，避免误点图片上的刷新图标。
           </p>
           <p v-if="activeProject.scenes.length === 0" class="hint">还没有分镜，先去生成/导入剧本。</p>
 
-          <div v-for="(scene, sIdx) in activeProject.scenes" :key="scene.id" class="overview-scene-block">
-            <div class="overview-scene-head">
-              <button type="button" class="overview-scene-ref" @click="jumpToSceneEdit(sIdx)">
-                <span class="overview-ref-thumb" :class="statusColorClass(scene.status)">
-                  <img v-if="scene.url" :src="`${apiBaseUrl}${scene.url}`" />
-                  <i v-else class="overview-ref-placeholder">{{ scene.status === 'running' ? '…' : '景' }}</i>
-                  <span class="overview-ref-dot" :class="statusColorClass(scene.status)"></span>
-                </span>
-                <span class="overview-scene-title">第{{ scene.order + 1 }}场</span>
-              </button>
-              <p class="overview-scene-summary" :title="scene.summary">{{ scene.summary }}</p>
-            </div>
-            <div class="overview-shot-grid">
+          <div v-if="overviewShots.length > 0" class="overview-all-shot-grid">
+            <article
+              v-for="{ scene, sceneIndex, shot } in overviewShots"
+              :key="shot.id"
+              class="overview-shot-card overview-shot-card-full"
+            >
               <button
-                v-for="shot in scene.shots"
-                :key="shot.id"
                 type="button"
-                class="overview-shot-card"
+                class="overview-shot-media-button"
+                title="查看大图"
                 @click="openShotViewer(scene.id, shot.id)"
               >
                 <span class="overview-shot-media" :class="statusColorClass(assetOf(shot.id, 'image')?.status)">
@@ -4010,17 +4187,25 @@ function statusLabel(status: string): string {
                   <i v-else class="overview-shot-placeholder">{{ assetOf(shot.id, 'image')?.status === 'running' ? '生成中…' : '暂无画面' }}</i>
                   <span class="overview-shot-dot" :class="statusColorClass(assetOf(shot.id, 'image')?.status)"></span>
                   <span v-if="assetOf(shot.id, 'video')?.status === 'completed'" class="overview-shot-video-badge">▶</span>
-                  <button
-                    type="button"
-                    class="overview-shot-refresh"
-                    title="重新生成这一镜的图片"
-                    :disabled="generatingAsset[`${shot.id}:image`]"
-                    @click.stop="generateAsset(shot.id, 'image')"
-                  >↻</button>
                 </span>
-                <span class="overview-shot-label">第{{ shot.order + 1 }}镜</span>
               </button>
-            </div>
+              <div class="overview-shot-info">
+                <span class="overview-shot-label">第{{ scene.order + 1 }}场 · 镜头 {{ shot.order + 1 }}</span>
+                <p :title="shot.drawPrompt">{{ shot.drawPrompt || shot.dialogue || scene.summary || '暂无镜头描述' }}</p>
+              </div>
+              <div class="overview-shot-actions">
+                <button
+                  type="button"
+                  class="ghost"
+                  :disabled="generatingAsset[`${shot.id}:image`] || assetOf(shot.id, 'image')?.status === 'running'"
+                  @click="generateAsset(shot.id, 'image')"
+                >
+                  {{ assetOf(shot.id, 'image')?.status === 'completed' ? '重新生成图片' : '生成图片' }}
+                </button>
+                <button type="button" class="ghost" @click="jumpToShotEdit(scene.order + 1, shot.order + 1)">编辑</button>
+                <button type="button" class="ghost" @click="jumpToSceneEdit(sceneIndex)">场景</button>
+              </div>
+            </article>
           </div>
           <div class="overview-cta-bar">
             <span>分镜图片都确认没问题了 →</span>
@@ -4271,7 +4456,7 @@ function statusLabel(status: string): string {
                 type="button"
                 class="ghost ai-optimize-button"
                 :disabled="promptOptimizeState(`characterPrompt-${c.id}`).optimizing"
-                @click="optimizePromptField(`characterPrompt-${c.id}`, c.prompt ?? '', `角色「${c.name}」的外观设定图描述`, (v) => { c.prompt = v; saveCharacterPrompt(c) })"
+                @click="optimizePromptField(`characterPrompt-${c.id}`, c.prompt ?? '', `火山方舟 Seedream 角色「${c.name}」设定图描述，需要强化正面全身、侧面、表情、服装和一致性`, (v) => { c.prompt = v; saveCharacterPrompt(c) })"
               >
                 {{ promptOptimizeState(`characterPrompt-${c.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
               </button>
@@ -4319,6 +4504,26 @@ function statusLabel(status: string): string {
       </div>
 
       <div v-if="activeStep === 'shots'">
+      <div class="shot-mode-panel">
+        <div>
+          <strong>分镜工作台</strong>
+          <p class="hint">普通模式按「画面 → 视频 → 配音」走，素材、按钮和状态放在同一张卡里；需要手动调参考图/候选/模型时再切专业模式。</p>
+        </div>
+        <div class="shot-mode-toggle" role="group" aria-label="分镜模式">
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ active: shotUiMode === 'simple' }"
+            @click="shotUiMode = 'simple'"
+          >普通模式</button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ active: shotUiMode === 'advanced' }"
+            @click="shotUiMode = 'advanced'"
+          >专业模式</button>
+        </div>
+      </div>
       <!-- 场次改成纵向一行一行的手风琴，不再是"左边缩略图网格+右边常驻详情"两栏布局——
            跟"剧本"步骤的表格总览是同一个设计语言，两个步骤看起来是一套系统。
            点场次行展开，下面就是这场戏的所有镜头(也是手风琴行)；镜头默认收起成一条紧凑
@@ -4373,7 +4578,7 @@ function statusLabel(status: string): string {
                     type="button"
                     class="ghost ai-optimize-button"
                     :disabled="promptOptimizeState(`sceneSummary-${scene.id}`).optimizing"
-                    @click.stop="optimizePromptField(`sceneSummary-${scene.id}`, scene.summary ?? '', '短剧场次描述，同时也是这场戏场景参考图的生成提示词', (v) => { scene.summary = v; saveScene(scene) })"
+                    @click.stop="optimizePromptField(`sceneSummary-${scene.id}`, scene.summary ?? '', '火山方舟 Seedream 短剧场景参考图描述，只画环境和光线，不出现人物，需要方便后续镜头一致性', (v) => { scene.summary = v; saveScene(scene) })"
                   >
                     {{ promptOptimizeState(`sceneSummary-${scene.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
                   </button>
@@ -4597,8 +4802,12 @@ function statusLabel(status: string): string {
                   </div>
 
                   <Transition name="fade">
-                    <div v-if="shot.id === activeShotId" class="shot-row-body">
-                      <aside class="shot-media-pane">
+                    <div
+                      v-if="shot.id === activeShotId"
+                      class="shot-row-body"
+                      :class="shotUiMode === 'simple' ? 'shot-row-body-simple' : 'shot-row-body-advanced'"
+                    >
+                      <aside v-if="shotUiMode === 'advanced'" class="shot-media-pane">
                         <div class="shot-media-pane-head">
                           <strong>镜头{{ shot.order + 1 }} 生成结果</strong>
                           <span class="hint">图片 · 视频 · 语音</span>
@@ -4628,7 +4837,7 @@ function statusLabel(status: string): string {
                         </div>
                       </aside>
                       <div class="shot-settings-pane">
-                      <section class="consistency-panel">
+                      <section v-if="shotUiMode === 'advanced'" class="consistency-panel">
                         <div class="consistency-panel-head">
                           <div><strong>一致性控制</strong><span>锁定人物、场景和视频起始帧</span></div>
                           <div class="shot-move-actions">
@@ -4676,6 +4885,17 @@ function statusLabel(status: string): string {
                               <button class="ghost" @click="pickReferenceFile(startImagePathInput, shot.id, false)">选择文件…</button>
                             </div>
                           </div>
+                        </div>
+                      </section>
+                      <section v-else class="shot-simple-rules">
+                        <div>
+                          <strong>普通模式规则</strong>
+                          <span>先生成分镜图片；视频会默认使用这张图片做起始帧；角色和场景一致性自动从角色库、本场场景图读取。</span>
+                        </div>
+                        <div class="shot-simple-rule-list">
+                          <span :class="{ done: characterThumbs(shot.characterName).length > 0 }">角色 {{ characterThumbs(shot.characterName).length > 0 ? '已关联' : '未关联' }}</span>
+                          <span :class="{ done: scene.status === 'completed' }">场景 {{ scene.status === 'completed' ? '已就绪' : '未生成' }}</span>
+                          <span :class="{ done: assetOf(shot.id, 'image')?.status === 'completed' }">起始帧 {{ assetOf(shot.id, 'image')?.status === 'completed' ? '可用于视频' : '先生成图片' }}</span>
                         </div>
                       </section>
                       <div class="shot-stage-heading">
@@ -4783,9 +5003,9 @@ function statusLabel(status: string): string {
                           <div class="ai-optimize-row">
                             <button
                               type="button"
-                              class="ghost"
+                              class="ghost ai-optimize-button"
                               :disabled="promptOptimizeState(`shotDrawPrompt-${shot.id}`).optimizing"
-                              @click="optimizePromptField(`shotDrawPrompt-${shot.id}`, shot.drawPrompt ?? '', '短剧分镜的画面描述', (v) => { shot.drawPrompt = v; saveShot(shot) })"
+                              @click="optimizePromptField(`shotDrawPrompt-${shot.id}`, shot.drawPrompt ?? '', '火山方舟 Seedream 短剧分镜图片描述，需要镜头景别、人物动作、构图、光线、角色和场景一致性', (v) => { shot.drawPrompt = v; saveShot(shot) })"
                             >
                               {{ promptOptimizeState(`shotDrawPrompt-${shot.id}`).optimizing ? '优化中…' : 'AI优化提示词' }}
                             </button>
@@ -5103,6 +5323,15 @@ body {
   background: #18181b;
   color: white;
 }
+
+.sidebar-nav button:hover:not(:disabled) {
+  color: #18181b;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+.sidebar-nav button:hover:not(:disabled) .nav-icon { color: currentColor; }
+.sidebar-nav button.active:hover:not(:disabled) { color: white; background: #18181b; }
 .sidebar-current {
   display: flex;
   flex-direction: column;
@@ -5132,6 +5361,12 @@ body {
 .api-status.ok { color: #1a8a4a; }
 .api-status.error { color: #b4232f; }
 .api-status.checking { color: #8a8a90; }
+.api-status-detail {
+  max-width: 170px; color: #b4232f; font-size: 10px; line-height: 1.45;
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 3; word-break: break-word;
+}
+.api-restart-button { min-height: 24px; padding: 2px 8px; font-size: 11px; }
 
 .panel h2 { font-size: 16px; margin: 20px 0 8px; }
 .panel h2:first-child { margin-top: 0; }
@@ -5208,8 +5443,17 @@ button {
   color: white;
   cursor: pointer;
   white-space: nowrap;
+  font-weight: 650;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 }
-button:disabled { opacity: 0.5; cursor: default; }
+button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(24, 24, 27, 0.12); }
+button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color: #e4e4e7; background: #f4f4f5; box-shadow: none; }
 .hint { font-size: 12px; color: #8a8a90; }
 .hint-warning { color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
 .model-tag { font-family: ui-monospace, monospace; font-size: 11px; color: #3f6212; background: #f0fdf4; display: inline-block; padding: 1px 6px; border-radius: 4px; }
@@ -5261,7 +5505,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .list-head h2 { margin-bottom: 0; }
-.refresh { background: white; color: #18181b; }
+.refresh { background: white; color: #18181b; border-color: #d4d4d8; }
+.refresh:hover:not(:disabled) { border-color: #18181b; background: #fafafa; }
 .projects-page-head { display: none; }
 .project-list { list-style: none; padding: 0; margin: 0; }
 .project-list li {
@@ -5287,7 +5532,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .project-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .project-actions .project-delete { margin-left: 0; }
 
-.back { background: none; color: #18181b; border: none; padding: 0; margin-bottom: 12px; }
+.back { background: transparent; color: #52525b; border: none; padding: 0; margin-bottom: 12px; font-weight: 650; }
+.back:hover:not(:disabled) { color: #18181b; background: transparent; box-shadow: none; }
 .warning-box {
   display: flex;
   align-items: center;
@@ -5331,11 +5577,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 .style-mode-picker-inline > * { flex-shrink: 0; }
 .story-box { display: flex; align-items: center; gap: 10px; margin: 12px 0 20px; flex-wrap: wrap; }
 
-.ghost { background: white; color: #18181b; }
+.ghost { background: white; color: #18181b; border-color: #d4d4d8; }
+.ghost:hover:not(:disabled) { border-color: #18181b; background: #fafafa; }
 .ghost.danger { color: #b4232f; border-color: #fecaca; background: #fef2f2; }
+.ghost.danger:hover:not(:disabled) { color: white; border-color: #dc2626; background: #dc2626; }
 .ghost.accent { color: white; border-color: #16a34a; background: #16a34a; }
 .ghost.accent:hover:not(:disabled) { background: #15803d; border-color: #15803d; }
-.ghost.accent:disabled { color: #d4d4d8; border-color: #e4e4e7; background: #f4f4f5; }
+.ghost.accent:disabled,
+.ghost.danger:disabled,
+.ghost:disabled { color: #a1a1aa; border-color: #e4e4e7; background: #f4f4f5; }
 .terminal-test-button { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; font-weight: 650; }
 .terminal-test-button:hover:not(:disabled) { color: white; border-color: #2563eb; background: #2563eb; }
 .ai-optimize-button { color: #c2410c; border-color: #fed7aa; background: #fff7ed; font-weight: 650; }
@@ -5350,6 +5600,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .story-view-toggle { display: flex; align-items: center; gap: 8px; margin: 12px 0 16px; flex-wrap: wrap; }
 .tab-btn { background: white; color: #71717a; border: 1px solid #e4e4e7; padding: 6px 12px; border-radius: 6px; font-size: 13px; }
 .tab-btn.active { background: #18181b; color: white; border-color: #18181b; }
+.tab-btn:hover:not(:disabled), .manual-tab:hover:not(:disabled) { border-color: #a1a1aa; background: #fafafa; color: #18181b; }
+.tab-btn.active:hover:not(:disabled), .manual-tab.active:hover:not(:disabled) { background: #18181b; color: white; box-shadow: none; }
 
 /* 剧本表格总览：场次是分组行(可展开/收起)，镜头是网格排列的子行，跟 Excel 分组/大纲
    模式一个思路——不用一场一场点进详情，格子直接改文字，@change 照旧存库。 */
@@ -5395,7 +5647,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: #fafafa; display: flex; flex-direction: column; gap: 10px;
 }
 .manual-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.manual-tab { background: white; color: #18181b; border: 1px solid #e4e4e7; padding: 4px 10px; font-size: 12px; }
+.manual-tab { background: white; color: #52525b; border: 1px solid #e4e4e7; padding: 4px 10px; font-size: 12px; }
 .manual-tab.active { background: #18181b; color: white; border-color: #18181b; }
 .manual-search { max-width: 320px; }
 .manual-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
@@ -5446,16 +5698,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.12s ease, max-height 0.12s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* 状态语义色：红=未完成(待处理)、蓝=生成中、绿=完成、失败同样是红——未完成和失败都
-   用红色提醒"这里还需要处理"，跟生成中的蓝、完成的绿区分开；用在生成按钮、媒体预览框
-   边框、状态点上，三处样式统一，扫一眼颜色就知道进度。 */
-.status-pending { border-color: #dc2626 !important; color: #dc2626; }
-.status-running { border-color: #2563eb !important; color: #2563eb; }
-.status-completed { border-color: #16a34a !important; color: #16a34a; }
-.status-failed { border-color: #dc2626 !important; color: #dc2626; }
+/* 生成状态语义色：灰=待处理、蓝=生成中、绿=完成、红=失败。 */
+.status-pending { border-color: #d4d4d8 !important; color: #71717a; background-color: #f4f4f5; }
+.status-running { border-color: #bfdbfe !important; color: #2563eb; background-color: #eff6ff; }
+.status-completed { border-color: #bbf7d0 !important; color: #15803d; background-color: #f0fdf4; }
+.status-failed { border-color: #fecaca !important; color: #b4232f; background-color: #fef2f2; }
 .status-dot-group { display: flex; gap: 3px; align-items: center; }
-.status-dot { width: 7px; height: 7px; border-radius: 999px; background: #dc2626; flex-shrink: 0; }
-.status-dot.status-pending { background: #dc2626; }
+.status-dot { width: 7px; height: 7px; border-radius: 999px; background: #a1a1aa; flex-shrink: 0; }
+.status-dot.status-pending { background: #a1a1aa; }
 .status-dot.status-running { background: #2563eb; }
 .status-dot.status-completed { background: #16a34a; }
 .status-dot.status-failed { background: #dc2626; }
@@ -5464,7 +5714,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px;
   border: 1px solid #e4e4e7; border-radius: 4px; color: #a1a1aa; font-size: 9px; font-weight: 600;
 }
-.asset-status-mini.status-pending { color: #b4232f; border-color: #fecaca; background: #fef2f2; }
+.asset-status-mini.status-pending { color: #71717a; border-color: #d4d4d8; background: #f4f4f5; }
 .asset-status-mini.status-running { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
 .asset-status-mini.status-completed { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
 .asset-status-mini.status-failed { color: #b4232f; border-color: #fecaca; background: #fef2f2; }
@@ -5496,9 +5746,23 @@ button:disabled { opacity: 0.5; cursor: default; }
 .overview-ref-grid, .overview-shot-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-bottom: 8px;
 }
+.overview-all-shot-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 8px;
+}
 .overview-ref-card, .overview-shot-card {
   display: flex; flex-direction: column; gap: 6px; padding: 0; border: none; background: none;
   cursor: pointer; text-align: left; font: inherit; color: inherit;
+}
+.overview-shot-card-full {
+  gap: 8px; padding: 10px; border: 1px solid #e4e4e7; border-radius: 12px; background: white;
+  cursor: default;
+}
+.overview-shot-media-button {
+  display: block; width: 100%; padding: 0; border: 0; border-radius: 10px; background: transparent;
+  cursor: zoom-in;
+}
+.overview-shot-media-button:hover:not(:disabled) {
+  background: transparent; box-shadow: none; transform: none;
 }
 .overview-ref-thumb {
   position: relative; height: 64px; border-radius: 10px; background: #f4f4f5; border: 1px solid #e4e4e7;
@@ -5525,11 +5789,34 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .overview-shot-refresh:disabled { opacity: 0.5; cursor: default; }
 .overview-shot-label { font-size: 11px; color: #71717a; }
+.overview-shot-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.overview-shot-info p {
+  display: -webkit-box; min-height: 36px; margin: 0; overflow: hidden; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; color: #52525b; font-size: 12px; line-height: 1.5;
+}
+.overview-shot-actions {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center;
+}
+.overview-shot-actions button { min-height: 30px; padding: 5px 8px; font-size: 12px; }
 .overview-cta-bar {
   display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; margin-top: 12px;
   background: #eff6ff; border-radius: 10px; font-size: 13px; color: #1d4ed8;
 }
 .overview-hint { margin: 0 0 12px; }
+
+.shot-mode-panel {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 14px; margin: 0 0 12px; border: 1px solid #dbeafe; border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbff, #f7f7f9);
+}
+.shot-mode-panel strong { color: #1d4ed8; font-size: 15px; }
+.shot-mode-panel p { margin: 4px 0 0; }
+.shot-mode-toggle {
+  display: inline-flex; flex-shrink: 0; gap: 3px; padding: 3px;
+  border-radius: 11px; background: #e9eef7;
+}
+.shot-mode-toggle .tab-btn { border-color: transparent; background: transparent; }
+.shot-mode-toggle .tab-btn.active { color: #18181b; background: white; border-color: transparent; }
 
 /* 一键生成按钮"真的在跑"的小圆点转圈动画——之前按钮只在网络请求那几百毫秒里文字
    变化，请求一回来就变回原样，用户完全看不出后台是不是还在跑；现在只要数据里
@@ -5748,13 +6035,13 @@ button:disabled { opacity: 0.5; cursor: default; }
 .pair-action-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
 .pair-action { align-self: flex-start; margin-top: 2px; }
 .pair-action-row .pair-action { margin-top: 0; }
-/* 按钮是深色实心底，跟浅色预览框不是一套底色，同样的状态色直接套边框不够醒目，
-   这里针对按钮场景单独定一套背景色：待处理/未完成=红色实心(提醒还没生成)、生成中=蓝色实心、
-   已完成=白底绿边(次要动作，"已经有了，点了会重新生成")、失败=红色实心(催促重试)。 */
-.pair-action.status-pending { background: #dc2626; border-color: #dc2626; color: white; }
+/* 生成动作按钮：未生成用主按钮，生成中蓝色，已完成降级成白底绿边，失败红色重试。 */
+.pair-action.status-pending { background: #18181b; border-color: #18181b; color: white; }
 .pair-action.status-running { background: #2563eb; border-color: #2563eb; color: white; }
 .pair-action.status-completed { background: white; border-color: #16a34a; color: #16a34a; }
 .pair-action.status-failed { background: #dc2626; border-color: #dc2626; color: white; }
+.pair-action.status-completed:hover:not(:disabled) { background: #16a34a; border-color: #16a34a; color: white; }
+.pair-action.status-failed:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
 
 /* 第三梯队：折叠起来的辅助控制，跟核心内容拉开视觉权重差距 */
 .shot-advanced { margin-top: 12px; border-top: 1px dashed #e4e4e7; padding-top: 8px; }
@@ -5905,6 +6192,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .api-status.ok { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
 .ui-v2 .api-status.error { color: #b4232f; background: #fef2f2; border-color: #fecaca; }
 .ui-v2 .api-status.checking { color: #71717a; background: #f4f4f5; border-color: #d4d4d8; }
+.ui-v2 .api-status-detail { max-width: 168px; }
+.ui-v2 .api-restart-button { min-height: 26px; padding: 3px 8px; font-size: 11px; }
 
 .ui-v2 button, .ui-v2 input, .ui-v2 textarea, .ui-v2 select { border-radius: 8px; font-size: 13px; }
 .ui-v2 button { min-height: 32px; padding: 6px 12px; }
@@ -6136,7 +6425,12 @@ button:disabled { opacity: 0.5; cursor: default; }
   color: #2563eb;
 }
 .ui-v2 .story-command-summary strong { font-size: 12px; color: #6b7280; font-weight: 500; }
-.ui-v2 .story-status { font-size: 11px; font-weight: 700; }
+.ui-v2 .story-status,
+.ui-v2 .shot-stage-status,
+.ui-v2 .shot-media-card-title span:last-child {
+  display: inline-flex; align-items: center; min-height: 22px; padding: 2px 8px;
+  border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 700;
+}
 .ui-v2 .story-command-actions { display: flex; gap: 8px; margin-top: 14px; }
 .ui-v2 .story-command-actions > button:first-child { min-width: 130px; font-weight: 700; }
 .ui-v2 .story-context-panel { margin-top: 14px; padding-top: 11px; border-top: 1px solid #e4e4e7; }
@@ -6159,31 +6453,51 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .story-outline-row input { min-height: 34px; }
 .ui-v2 .story-outline-count { color: #71717a; white-space: nowrap; }
 .ui-v2 .settings-page {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px;
 }
 .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
 .ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
 .ui-v2 .settings-tabs { grid-column: 1 / -1; }
-.ui-v2 .settings-tabs { margin-bottom: 2px; }
+.ui-v2 .settings-tabs { margin-bottom: 2px; padding-bottom: 8px; }
 .ui-v2 .settings-page > .back { justify-self: start; margin-bottom: -4px; }
 .ui-v2 .settings-page-head {
-  padding-bottom: 14px; border-bottom: 1px solid #e4e4e7;
+  padding-bottom: 10px; border-bottom: 1px solid #e4e4e7;
 }
 .ui-v2 .settings-page-head { align-items: center; }
-.ui-v2 .settings-page-head h1 { font-size: 22px; line-height: 1.2; }
+.ui-v2 .settings-page-head h1 { font-size: 21px; line-height: 1.18; }
 .ui-v2 .settings-page-head p { font-size: 12px; }
+.ui-v2 .settings-theme-card {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 14px 16px; border: 1px solid #e4e4e7; border-radius: 13px; background: white;
+}
+.ui-v2 .settings-theme-card strong { font-size: 14px; }
+.ui-v2 .settings-theme-card p { margin: 3px 0 0; }
+.ui-v2 .theme-switcher {
+  display: inline-flex; flex-shrink: 0; gap: 4px; padding: 4px; border-radius: 12px; background: #f0f0f2;
+}
+.ui-v2 .theme-option {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 12px;
+  color: #52525b; border-color: transparent; background: transparent; box-shadow: none;
+}
+.ui-v2 .theme-option:hover:not(:disabled) { color: #18181b; background: #fafafa; box-shadow: none; }
+.ui-v2 .theme-option.active { color: #18181b; background: white; border-color: transparent; }
+.ui-v2 .theme-dot {
+  width: 10px; height: 10px; border-radius: 999px; background: #18181b;
+}
+.ui-v2 .theme-option-vue .theme-dot { background: #42b883; }
+.ui-v2 .theme-option-classic .theme-dot { background: #71717a; }
 .ui-v2 .settings-state {
-  display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px;
+  display: inline-flex; align-items: center; min-height: 24px; padding: 3px 9px;
   border: 1px solid; border-radius: 999px; font-weight: 700;
 }
 .ui-v2 .settings-state.ready { color: #047857; border-color: #a7f3d0; background: #ecfdf5; }
 .ui-v2 .settings-state.missing { color: #b45309; border-color: #fde68a; background: #fffbeb; }
 .ui-v2 .settings-group {
-  padding: 18px; border: 1px solid #e4e4e7; border-radius: 13px; background: #fbfbfd;
+  padding: 15px; border: 1px solid #e4e4e7; border-radius: 13px; background: #fbfbfd;
 }
 .ui-v2 .settings-group-primary { background: white; }
 .ui-v2 .settings-group-update { grid-column: 1 / -1; background: white; }
-.ui-v2 .settings-group-head { margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #e4e4e7; }
+.ui-v2 .settings-group-head { margin-bottom: 13px; padding-bottom: 10px; border-bottom: 1px solid #e4e4e7; }
 .ui-v2 .settings-group-head > div {
   display: flex; align-items: baseline; gap: 8px; min-width: 0;
 }
@@ -6193,17 +6507,26 @@ button:disabled { opacity: 0.5; cursor: default; }
   min-width: 0; color: #8a8a90; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ui-v2 .settings-group-head > span {
-  padding: 3px 7px; border-radius: 999px; background: #f0f0f2; color: #71717a; font-size: 10px; font-weight: 700;
+  padding: 3px 8px; border-radius: 999px; background: #f0f0f2; color: #71717a; font-size: 10px; font-weight: 700;
 }
 .ui-v2 .settings-group-primary .settings-group-head > span { color: #b4232f; background: #fef2f2; }
-.ui-v2 .settings-group .field { gap: 7px; margin-bottom: 16px; }
+.ui-v2 .settings-group .field { gap: 6px; margin-bottom: 13px; }
 .ui-v2 .settings-group .field:last-child { margin-bottom: 0; }
 .ui-v2 .settings-group .field > label { color: #27272a; font-size: 13px; font-weight: 650; }
 .ui-v2 .field-badge {
   display: inline-flex; margin-left: 5px; padding: 2px 6px; border-radius: 999px;
   background: #f0f0f2; color: #71717a; font-weight: 600; vertical-align: middle;
 }
-.ui-v2 .field-help { line-height: 1.5; }
+.ui-v2 .settings-page input,
+.ui-v2 .settings-page select {
+  min-height: 34px; padding: 7px 9px; font-size: 13px;
+}
+.ui-v2 .settings-page textarea {
+  min-height: 58px; padding: 8px 10px; font-size: 13px; line-height: 1.5;
+}
+.ui-v2 .settings-field-inline { gap: 12px; }
+.ui-v2 .settings-field-inline > label { width: 168px; padding-top: 7px; }
+.ui-v2 .field-help { margin: 0; font-size: 11px; line-height: 1.45; }
 .ui-v2 .field-help code { color: #3f6212; font-family: ui-monospace, monospace; }
 .ui-v2 .custom-template-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .ui-v2 .custom-template-row {
@@ -6220,12 +6543,29 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ui-v2 .settings-doc summary { color: #52525b; font-size: 11px; font-weight: 600; }
 .ui-v2 .settings-doc .model-ref-hint { margin: 9px 0 2px; color: #71717a; line-height: 1.65; }
+.ui-v2 .settings-page .manual-tab {
+  min-height: 34px; padding: 6px 12px; font-size: 13px;
+}
+.ui-v2 .settings-page .story-gen-provider-tabs { gap: 10px; }
+.ui-v2 .settings-page .story-gen-provider-tab {
+  min-height: 64px; padding: 10px 12px; gap: 4px;
+}
+.ui-v2 .settings-page .story-gen-provider-tab strong { font-size: 14px; }
+.ui-v2 .settings-page .story-gen-provider-tab span { font-size: 12px; line-height: 1.42; }
+.ui-v2 .settings-page .story-gen-test-block {
+  gap: 5px; margin: 3px 0 12px;
+}
+.ui-v2 .settings-page .cli-path-row { gap: 8px; }
+.ui-v2 .settings-page .cli-path-row button,
+.ui-v2 .settings-page .story-gen-test-block button {
+  min-height: 34px; padding: 6px 12px; font-size: 13px;
+}
 .ui-v2 .settings-actions {
-  align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px;
+  align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px;
   border: 1px solid #d4d4d8; border-radius: 13px; background: white;
 }
 .ui-v2 .settings-actions > div { display: flex; flex-direction: column; gap: 2px; }
-.ui-v2 .settings-actions > button { min-width: 132px; background: #18181b; color: white; font-weight: 700; }
+.ui-v2 .settings-actions > button { min-width: 128px; min-height: 34px; background: #18181b; color: white; font-weight: 700; }
 .ui-v2 .update-card { align-items: flex-start; }
 .ui-v2 .update-actions button { min-height: 34px; }
 .ui-v2 .project-title-row h2 { margin: 0; font-size: 15px; }
@@ -6257,6 +6597,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .tag-content-type { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
 .ui-v2 .tag-style-mode { color: #0f766e; border-color: #99f6e4; background: #f0fdfa; }
 .ui-v2 .tag-exported { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; font-weight: 600; }
+.ui-v2 .tag.status-pending { color: #71717a; border-color: #d4d4d8; background: #f4f4f5; }
+.ui-v2 .tag.status-running { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
+.ui-v2 .tag.status-completed { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
+.ui-v2 .tag.status-failed { color: #b4232f; border-color: #fecaca; background: #fef2f2; }
 .ui-v2 .warning-box, .ui-v2 .file-open-toast,
 .ui-v2 .import-box, .ui-v2 .manual-box, .ui-v2 .character-box {
   border-radius: 12px; background: #fff;
@@ -6415,6 +6759,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .shot-row-body {
   display: grid; grid-template-columns: minmax(330px, 40%) minmax(0, 60%); gap: 24px; padding: 0;
 }
+.ui-v2 .shot-row-body-simple { grid-template-columns: 1fr; gap: 14px; }
+.ui-v2 .shot-row-body-advanced { grid-template-columns: minmax(330px, 40%) minmax(0, 60%); }
 .ui-v2 .shot-media-pane {
   display: flex; flex-direction: column; gap: 14px; align-self: start; padding: 18px;
   border: 1px solid #e4e4e7; border-radius: 12px; background: #f7f7f9;
@@ -6447,6 +6793,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .consistency-panel-head strong { font-size: 15px; }
 .ui-v2 .consistency-panel-head strong { color: #1d4ed8; }
 .ui-v2 .consistency-panel-head div span { font-size: 12px; color: #6b7280; }
+.ui-v2 .shot-simple-rules {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin-bottom: 14px; border: 1px solid #bfdbfe; border-radius: 12px;
+  background: #f8fbff;
+}
+.ui-v2 .shot-simple-rules strong {
+  display: block; margin-bottom: 3px; color: #1d4ed8; font-size: 14px;
+}
+.ui-v2 .shot-simple-rules span { color: #6b7280; font-size: 12px; line-height: 1.5; }
+.ui-v2 .shot-simple-rule-list { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.ui-v2 .shot-simple-rule-list span {
+  display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px;
+  border: 1px solid #e4e4e7; border-radius: 999px; background: white; color: #71717a; font-weight: 700;
+}
+.ui-v2 .shot-simple-rule-list span.done { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
 .shot-move-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .ui-v2 .consistency-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .ui-v2 .consistency-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -6468,11 +6829,27 @@ button:disabled { opacity: 0.5; cursor: default; }
   margin-bottom: 14px; padding: 12px; gap: 14px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fbfbfd;
 }
 .ui-v2 .shot-stage-content { margin-bottom: 14px; padding: 12px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fbfbfd; }
-.ui-v2 .pair-row.shot-stage-content { display: block; }
-.ui-v2 .pair-row.shot-stage-content > .pair-media-col { display: none; }
-.ui-v2 .pair-row.shot-stage-content .pair-text { width: 100%; }
-.ui-v2 .pair-row.shot-stage-content .pair-media { width: 100%; }
-.ui-v2 .pair-row.shot-stage-content .pair-media-audio { min-height: 76px; aspect-ratio: auto; }
+.ui-v2 .shot-row-body-advanced .pair-row.shot-stage-content { display: block; }
+.ui-v2 .shot-row-body-advanced .pair-row.shot-stage-content > .pair-media-col { display: none; }
+.ui-v2 .shot-row-body-advanced .pair-row.shot-stage-content .pair-text { width: 100%; }
+.ui-v2 .shot-row-body-advanced .pair-row.shot-stage-content .pair-media { width: 100%; }
+.ui-v2 .shot-row-body-advanced .pair-row.shot-stage-content .pair-media-audio { min-height: 76px; aspect-ratio: auto; }
+.ui-v2 .shot-row-body-simple .shot-stage-content {
+  display: grid; grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
+  gap: 14px; align-items: stretch; padding: 14px; background: white;
+}
+.ui-v2 .shot-row-body-simple .pair-media-col { display: flex; width: 100%; }
+.ui-v2 .shot-row-body-simple .pair-media {
+  width: 100%; min-height: 250px; border-width: 1px; border-radius: 11px;
+}
+.ui-v2 .shot-row-body-simple .pair-media-audio { min-height: 92px; aspect-ratio: auto; }
+.ui-v2 .shot-row-body-simple .pair-text { gap: 8px; }
+.ui-v2 .shot-row-body-simple .pair-action {
+  width: fit-content; min-width: 132px; min-height: 36px; margin-top: 4px; font-weight: 750;
+}
+.ui-v2 .shot-row-body-simple .open-folder-btn {
+  width: fit-content; min-height: 28px; margin-top: 0;
+}
 .ui-v2 .shot-advanced { margin-top: 10px; padding-top: 8px; }
 .ui-v2 .shot-advanced summary { display: flex; align-items: center; gap: 7px; }
 .ui-v2 .batch-toolbar { border-radius: 11px; }
@@ -6482,6 +6859,645 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ui-v2 .pair-media { border-width: 1px; border-radius: 10px; }
 .ui-v2 .candidate-item img, .ui-v2 .candidate-placeholder { border-radius: 9px; }
 .ui-v2 .model-tag, .ui-v2 .model-ref-hint code { border-radius: 6px; }
+
+/* 经典灰白主题：布局不动，只用一套中性灰 + 语义色建立主次。 */
+.shell.ui-v2.theme-classic {
+  --ui-bg: #f6f7f8;
+  --ui-panel: #ffffff;
+  --ui-panel-soft: #fafafa;
+  --ui-panel-muted: #f3f4f6;
+  --ui-border: #e5e7eb;
+  --ui-border-strong: #d1d5db;
+  --ui-text: #111827;
+  --ui-text-secondary: #4b5563;
+  --ui-text-muted: #6b7280;
+  --ui-primary: #111827;
+  --ui-primary-hover: #374151;
+  --ui-primary-strong: #111827;
+  --ui-primary-soft: #f3f4f6;
+  --ui-info: #2563eb;
+  --ui-info-soft: #eff6ff;
+  --ui-success: #16a34a;
+  --ui-success-soft: #f0fdf4;
+  --ui-warning: #d97706;
+  --ui-warning-soft: #fffbeb;
+  --ui-danger: #dc2626;
+  --ui-danger-soft: #fef2f2;
+  --ui-ai: #ea580c;
+  --ui-ai-soft: #fff7ed;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+}
+
+/* 基础文字层级 */
+.ui-v2.theme-classic .main-content { color: var(--ui-text); border-color: var(--ui-border); background: var(--ui-bg); }
+.ui-v2.theme-classic h1,
+.ui-v2.theme-classic h2,
+.ui-v2.theme-classic h3,
+.ui-v2.theme-classic strong { color: var(--ui-text); }
+.ui-v2.theme-classic .hint,
+.ui-v2.theme-classic .field-help,
+.ui-v2.theme-classic .step-status,
+.ui-v2.theme-classic .premise,
+.ui-v2.theme-classic .style-mode-note,
+.ui-v2.theme-classic .overview-subhead,
+.ui-v2.theme-classic .overview-shot-label,
+.ui-v2.theme-classic .overview-ref-label { color: var(--ui-text-muted); }
+.ui-v2.theme-classic label,
+.ui-v2.theme-classic .scene-ref-label,
+.ui-v2.theme-classic .advanced-cell-title,
+.ui-v2.theme-classic .consistency-item label { color: var(--ui-text-secondary); }
+.ui-v2.theme-classic input,
+.ui-v2.theme-classic textarea,
+.ui-v2.theme-classic select {
+  color: var(--ui-text); border-color: var(--ui-border); background: var(--ui-panel);
+}
+.ui-v2.theme-classic input:focus-visible,
+.ui-v2.theme-classic textarea:focus-visible,
+.ui-v2.theme-classic select:focus-visible,
+.ui-v2.theme-classic button:focus-visible { outline-color: var(--ui-primary-strong); }
+
+/* 模块标题：大标题深黑；功能小标题少量用蓝/橙/绿区分模块，不改变结构。 */
+.ui-v2.theme-classic .projects-page-head h1,
+.ui-v2.theme-classic .settings-page-head h1,
+.ui-v2.theme-classic .manual-page-head h1,
+.ui-v2.theme-classic .project-title-row h2 { color: var(--ui-text); }
+.ui-v2.theme-classic .story-command-label,
+.ui-v2.theme-classic .story-table-scene-label,
+.ui-v2.theme-classic .character-box > h2,
+.ui-v2.theme-classic .export-box > h2,
+.ui-v2.theme-classic .shot-media-pane-head strong,
+.ui-v2.theme-classic .consistency-panel-head strong,
+.ui-v2.theme-classic .shot-mode-panel strong,
+.ui-v2.theme-classic .shot-simple-rules strong,
+.ui-v2.theme-classic .settings-group-head h2 { color: var(--ui-info); }
+.ui-v2.theme-classic .project-create-head h2,
+.ui-v2.theme-classic .project-list-head h2 { color: var(--ui-text); }
+.ui-v2.theme-classic .poster-step-head strong,
+.ui-v2.theme-classic .poster-preview-head strong,
+.ui-v2.theme-classic .poster-create-actions > div > strong { color: var(--ui-ai); }
+.ui-v2.theme-classic .project-create-step-title > span,
+.ui-v2.theme-classic .shot-stage-num {
+  color: white; background: var(--ui-info);
+}
+.ui-v2.theme-classic .poster-step-head > span,
+.ui-v2.theme-classic .poster-step-number {
+  color: white; background: var(--ui-ai);
+}
+.ui-v2.theme-classic .shot-stage-heading { border-left-color: var(--ui-info); }
+
+/* 左侧导航：灰白底，当前项用深色文字和浅灰底。 */
+.ui-v2.theme-classic .sidebar { background: var(--ui-panel); border-color: var(--ui-border); border-right-color: var(--ui-border); }
+.ui-v2.theme-classic .sidebar-nav-label { color: var(--ui-text-muted); }
+.ui-v2.theme-classic .sidebar-current { border-color: var(--ui-border); background: var(--ui-panel); }
+.ui-v2.theme-classic .sidebar-nav button {
+  color: var(--ui-text-secondary); background: transparent; border-color: transparent; box-shadow: none;
+}
+.ui-v2.theme-classic .sidebar-nav button:hover:not(:disabled) {
+  color: var(--ui-text); background: transparent; box-shadow: none; transform: none;
+}
+.ui-v2.theme-classic .sidebar-nav button.active {
+  color: var(--ui-text); background: var(--ui-primary-soft); border-color: transparent;
+}
+.ui-v2.theme-classic .sidebar-nav button.active:hover:not(:disabled) {
+  color: var(--ui-text); background: var(--ui-primary-soft);
+}
+.ui-v2.theme-classic .nav-icon { color: var(--ui-text-muted); }
+.ui-v2.theme-classic .sidebar-nav button:hover:not(:disabled) .nav-icon,
+.ui-v2.theme-classic .sidebar-nav button.active .nav-icon { color: var(--ui-text); }
+
+/* 按钮系统：主操作黑色，次操作灰白，AI/信息/危险各自独立。 */
+.ui-v2.theme-classic button {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary);
+}
+.ui-v2.theme-classic button:hover:not(:disabled) {
+  border-color: var(--ui-primary-strong); background: var(--ui-primary-hover);
+  box-shadow: 0 8px 18px rgba(17, 24, 39, .12);
+}
+.ui-v2.theme-classic button:disabled {
+  color: #9ca3af; border-color: #e5e7eb; background: #f3f4f6; box-shadow: none;
+}
+.ui-v2.theme-classic .ghost,
+.ui-v2.theme-classic .refresh,
+.ui-v2.theme-classic .open-folder-btn,
+.ui-v2.theme-classic .tab-btn,
+.ui-v2.theme-classic .manual-tab,
+.ui-v2.theme-classic .theme-option,
+.ui-v2.theme-classic .project-template-card,
+.ui-v2.theme-classic .poster-template-card,
+.ui-v2.theme-classic .story-gen-provider-tab,
+.ui-v2.theme-classic .shot-tab,
+.ui-v2.theme-classic .shot-viewer-nav,
+.ui-v2.theme-classic .overview-shot-media-button,
+.ui-v2.theme-classic .overview-shot-refresh {
+  color: var(--ui-text-secondary); border-color: var(--ui-border); background: var(--ui-panel); box-shadow: none;
+}
+.ui-v2.theme-classic .ghost:hover:not(:disabled),
+.ui-v2.theme-classic .refresh:hover:not(:disabled),
+.ui-v2.theme-classic .open-folder-btn:hover:not(:disabled),
+.ui-v2.theme-classic .tab-btn:hover:not(:disabled),
+.ui-v2.theme-classic .manual-tab:hover:not(:disabled),
+.ui-v2.theme-classic .theme-option:hover:not(:disabled),
+.ui-v2.theme-classic .project-template-card:hover:not(:disabled),
+.ui-v2.theme-classic .poster-template-card:hover:not(:disabled),
+.ui-v2.theme-classic .story-gen-provider-tab:hover:not(:disabled),
+.ui-v2.theme-classic .shot-tab:hover:not(:disabled),
+.ui-v2.theme-classic .shot-viewer-nav:hover:not(:disabled),
+.ui-v2.theme-classic .overview-shot-refresh:hover:not(:disabled) {
+  color: var(--ui-text); border-color: var(--ui-border-strong); background: var(--ui-primary-soft); box-shadow: none;
+}
+.ui-v2.theme-classic .overview-shot-media-button,
+.ui-v2.theme-classic .overview-shot-media-button:hover:not(:disabled) {
+  color: inherit; border-color: transparent; background: transparent; box-shadow: none; transform: none;
+}
+.ui-v2.theme-classic .tab-btn.active,
+.ui-v2.theme-classic .manual-tab.active,
+.ui-v2.theme-classic .theme-option.active,
+.ui-v2.theme-classic .story-gen-provider-tab.active,
+.ui-v2.theme-classic .shot-tab.active {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary-strong);
+}
+.ui-v2.theme-classic .theme-option.active .theme-dot { background: white; }
+.ui-v2.theme-classic .ghost.accent,
+.ui-v2.theme-classic .shot-add-button,
+.ui-v2.theme-classic .batch-toolbar-select-all {
+  color: white; border-color: var(--ui-success); background: var(--ui-success);
+}
+.ui-v2.theme-classic .ghost.accent:hover:not(:disabled),
+.ui-v2.theme-classic .shot-add-button:hover:not(:disabled),
+.ui-v2.theme-classic .batch-toolbar-select-all:hover:not(:disabled) {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary-strong);
+}
+.ui-v2.theme-classic .ai-optimize-button {
+  color: var(--ui-ai); border-color: #fed7aa; background: var(--ui-ai-soft);
+}
+.ui-v2.theme-classic .ai-optimize-button:hover:not(:disabled) {
+  color: white; border-color: var(--ui-ai); background: var(--ui-ai);
+}
+.ui-v2.theme-classic .terminal-test-button {
+  color: var(--ui-info); border-color: #bae6fd; background: var(--ui-info-soft);
+}
+.ui-v2.theme-classic .terminal-test-button:hover:not(:disabled) {
+  color: white; border-color: var(--ui-info); background: var(--ui-info);
+}
+.ui-v2.theme-classic .ghost.danger,
+.ui-v2.theme-classic .danger {
+  color: var(--ui-danger); border-color: #fecaca; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-classic .ghost.danger:hover:not(:disabled),
+.ui-v2.theme-classic .danger:hover:not(:disabled) {
+  color: white; border-color: var(--ui-danger); background: var(--ui-danger);
+}
+.ui-v2.theme-classic .back {
+  color: var(--ui-text-muted); border-color: transparent; background: transparent; box-shadow: none;
+}
+.ui-v2.theme-classic .back:hover:not(:disabled) {
+  color: var(--ui-primary-strong); background: transparent; box-shadow: none;
+}
+.ui-v2.theme-classic .overview-ref-card,
+.ui-v2.theme-classic .overview-shot-card,
+.ui-v2.theme-classic .overview-scene-ref {
+  color: inherit; border-color: transparent; background: transparent; box-shadow: none;
+}
+.ui-v2.theme-classic .ref-pick-remove,
+.ui-v2.theme-classic .char-thumb-remove {
+  color: var(--ui-text-muted); border-color: var(--ui-border); background: var(--ui-panel); box-shadow: none;
+}
+.ui-v2.theme-classic .ref-pick-remove:hover:not(:disabled),
+.ui-v2.theme-classic .char-thumb-remove:hover:not(:disabled) {
+  color: white; border-color: var(--ui-danger); background: var(--ui-danger); box-shadow: none;
+}
+
+/* Tab/分段控件外壳：中性灰底，不铺绿色。 */
+.ui-v2.theme-classic .theme-switcher,
+.ui-v2.theme-classic .shot-mode-toggle,
+.ui-v2.theme-classic .story-view-toggle,
+.ui-v2.theme-classic .step-bar { background: var(--ui-panel-muted); }
+.ui-v2.theme-classic .step-item { color: var(--ui-text-secondary); background: transparent; }
+.ui-v2.theme-classic .step-item:hover:not(:disabled) { color: var(--ui-text); background: var(--ui-panel); }
+.ui-v2.theme-classic .step-item.active { color: var(--ui-text); background: var(--ui-panel); box-shadow: inset 0 -2px var(--ui-primary-strong); }
+
+/* 卡片/表单容器：统一灰白层次，靠间距和边框区分区域。 */
+.ui-v2.theme-classic .project-overview,
+.ui-v2.theme-classic .project-create-panel,
+.ui-v2.theme-classic .project-list,
+.ui-v2.theme-classic .settings-theme-card,
+.ui-v2.theme-classic .settings-group,
+.ui-v2.theme-classic .poster-form-section,
+.ui-v2.theme-classic .poster-preview-panel,
+.ui-v2.theme-classic .poster-create-actions,
+.ui-v2.theme-classic .text-image-form-card,
+.ui-v2.theme-classic .text-image-preview-panel,
+.ui-v2.theme-classic .story-command-panel,
+.ui-v2.theme-classic .story-table-group,
+.ui-v2.theme-classic .character-box,
+.ui-v2.theme-classic .scene-accordion,
+.ui-v2.theme-classic .scene-ref,
+.ui-v2.theme-classic .shot-media-pane,
+.ui-v2.theme-classic .shot-media-card,
+.ui-v2.theme-classic .shot-stage-heading,
+.ui-v2.theme-classic .shot-stage-content,
+.ui-v2.theme-classic .pair-row,
+.ui-v2.theme-classic .manual-search-row,
+.ui-v2.theme-classic .manual-entry,
+.ui-v2.theme-classic .reuse-item {
+  border-color: var(--ui-border); background: var(--ui-panel);
+}
+.ui-v2.theme-classic .shot-mode-panel,
+.ui-v2.theme-classic .shot-simple-rules,
+.ui-v2.theme-classic .consistency-panel,
+.ui-v2.theme-classic .project-custom-options,
+.ui-v2.theme-classic .poster-custom-template {
+  border-color: var(--ui-border); background: var(--ui-panel-soft);
+}
+.ui-v2.theme-classic .project-list li,
+.ui-v2.theme-classic .scene-row-head,
+.ui-v2.theme-classic .shot-row-head { border-color: var(--ui-border); }
+.ui-v2.theme-classic .project-list li:hover,
+.ui-v2.theme-classic .scene-row-head:hover,
+.ui-v2.theme-classic .shot-row-head:hover { background: var(--ui-panel-soft); }
+.ui-v2.theme-classic .scene-row.expanded .scene-row-head,
+.ui-v2.theme-classic .shot-row.expanded > .shot-row-head { box-shadow: inset 0 -2px var(--ui-primary-strong); }
+
+/* 状态系统：待处理/生成中/完成/失败各自语义色。 */
+.ui-v2.theme-classic .status-pending,
+.ui-v2.theme-classic .tag.status-pending,
+.ui-v2.theme-classic .asset-status-mini.status-pending,
+.ui-v2.theme-classic .settings-state.checking,
+.ui-v2.theme-classic .api-status.checking {
+  color: var(--ui-text-muted); border-color: var(--ui-border) !important; background: #f2f4f3;
+}
+.ui-v2.theme-classic .status-running,
+.ui-v2.theme-classic .tag.status-running,
+.ui-v2.theme-classic .asset-status-mini.status-running {
+  color: var(--ui-info); border-color: #bae6fd !important; background: var(--ui-info-soft);
+}
+.ui-v2.theme-classic .status-completed,
+.ui-v2.theme-classic .tag.status-completed,
+.ui-v2.theme-classic .asset-status-mini.status-completed,
+.ui-v2.theme-classic .settings-state.ready,
+.ui-v2.theme-classic .api-status.ok {
+  color: var(--ui-success); border-color: #b7e4cd !important; background: var(--ui-success-soft);
+}
+.ui-v2.theme-classic .status-failed,
+.ui-v2.theme-classic .tag.status-failed,
+.ui-v2.theme-classic .asset-status-mini.status-failed,
+.ui-v2.theme-classic .api-status.error,
+.ui-v2.theme-classic .story-gen-test-result.error {
+  color: var(--ui-danger); border-color: #fecaca !important; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-classic .status-dot.status-pending { background: #9ca3af; }
+.ui-v2.theme-classic .status-dot.status-running { background: var(--ui-info); }
+.ui-v2.theme-classic .status-dot.status-completed { background: var(--ui-success); }
+.ui-v2.theme-classic .status-dot.status-failed { background: var(--ui-danger); }
+.ui-v2.theme-classic .pair-action.status-pending { color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary); }
+.ui-v2.theme-classic .pair-action.status-running { color: white; border-color: var(--ui-info); background: var(--ui-info); }
+.ui-v2.theme-classic .pair-action.status-completed { color: var(--ui-success); border-color: #b7e4cd; background: var(--ui-panel); }
+.ui-v2.theme-classic .pair-action.status-completed:hover:not(:disabled) { color: white; border-color: var(--ui-success); background: var(--ui-success); }
+.ui-v2.theme-classic .pair-action.status-failed { color: white; border-color: var(--ui-danger); background: var(--ui-danger); }
+
+/* 标签/属性色：项目属性和生成状态分开，不混用红黄绿逻辑。 */
+.ui-v2.theme-classic .tag-status-draft { color: var(--ui-text-muted); border-color: var(--ui-border); background: #f2f4f3; }
+.ui-v2.theme-classic .tag-status-active { color: var(--ui-info); border-color: #bfdbfe; background: var(--ui-info-soft); }
+.ui-v2.theme-classic .tag-style-mode { color: var(--ui-text-secondary); border-color: var(--ui-border); background: var(--ui-primary-soft); }
+.ui-v2.theme-classic .tag-status-archived { color: var(--ui-warning); border-color: #fde68a; background: var(--ui-warning-soft); }
+.ui-v2.theme-classic .tag-content-type { color: var(--ui-info); border-color: #bae6fd; background: var(--ui-info-soft); }
+.ui-v2.theme-classic .tag-exported { color: var(--ui-success); border-color: #b7e4cd; background: var(--ui-success-soft); }
+.ui-v2.theme-classic .model-tag,
+.ui-v2.theme-classic .model-ref-hint code { color: var(--ui-primary-strong); background: var(--ui-primary-soft); }
+
+/* 警告/错误/提示：警告用琥珀，错误用红，普通说明不抢主按钮。 */
+.ui-v2.theme-classic .warning-box,
+.ui-v2.theme-classic .hint-warning {
+  color: var(--ui-warning); border-color: #fde68a; background: var(--ui-warning-soft);
+}
+.ui-v2.theme-classic .warning-box { border-left-color: var(--ui-warning); }
+.ui-v2.theme-classic .error,
+.ui-v2.theme-classic .ai-optimize-error { color: var(--ui-danger); }
+.ui-v2.theme-classic .file-open-toast {
+  color: var(--ui-danger); border-color: #fecaca; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-classic .story-gen-test-result.ok { color: var(--ui-success); background: var(--ui-success-soft); border-color: #b7e4cd; }
+
+
+/* Vue 系统色主题：保留灰白布局，Vue 绿只作为品牌主色，不再大面积铺底。 */
+.shell.ui-v2.theme-vue {
+  --ui-bg: #f6f8f7;
+  --ui-panel: #ffffff;
+  --ui-panel-soft: #fbfcfb;
+  --ui-panel-muted: #f0f3f2;
+  --ui-border: #dfe7e3;
+  --ui-border-strong: #cbd8d1;
+  --ui-text: #213547;
+  --ui-text-secondary: #4f6259;
+  --ui-text-muted: #7b8982;
+  --ui-primary: #42b883;
+  --ui-primary-hover: #33a06f;
+  --ui-primary-strong: #2f8f66;
+  --ui-primary-soft: #eef8f3;
+  --ui-info: #2563eb;
+  --ui-info-soft: #eff6ff;
+  --ui-success: #2f8f66;
+  --ui-success-soft: #eef8f3;
+  --ui-warning: #b7791f;
+  --ui-warning-soft: #fff8e8;
+  --ui-danger: #d14343;
+  --ui-danger-soft: #fff1f2;
+  --ui-ai: #ea580c;
+  --ui-ai-soft: #fff7ed;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+}
+
+/* 基础文字层级 */
+.ui-v2.theme-vue .main-content { color: var(--ui-text); border-color: var(--ui-border); background: var(--ui-bg); }
+.ui-v2.theme-vue h1,
+.ui-v2.theme-vue h2,
+.ui-v2.theme-vue h3,
+.ui-v2.theme-vue strong { color: var(--ui-text); }
+.ui-v2.theme-vue .hint,
+.ui-v2.theme-vue .field-help,
+.ui-v2.theme-vue .step-status,
+.ui-v2.theme-vue .premise,
+.ui-v2.theme-vue .style-mode-note,
+.ui-v2.theme-vue .overview-subhead,
+.ui-v2.theme-vue .overview-shot-label,
+.ui-v2.theme-vue .overview-ref-label { color: var(--ui-text-muted); }
+.ui-v2.theme-vue label,
+.ui-v2.theme-vue .scene-ref-label,
+.ui-v2.theme-vue .advanced-cell-title,
+.ui-v2.theme-vue .consistency-item label { color: var(--ui-text-secondary); }
+.ui-v2.theme-vue input,
+.ui-v2.theme-vue textarea,
+.ui-v2.theme-vue select {
+  color: var(--ui-text); border-color: var(--ui-border); background: var(--ui-panel);
+}
+.ui-v2.theme-vue input:focus-visible,
+.ui-v2.theme-vue textarea:focus-visible,
+.ui-v2.theme-vue select:focus-visible,
+.ui-v2.theme-vue button:focus-visible { outline-color: var(--ui-primary-strong); }
+
+/* 模块标题：大标题保持深青灰，小标题/步骤编号用 Vue 绿做识别点。 */
+.ui-v2.theme-vue .projects-page-head h1,
+.ui-v2.theme-vue .settings-page-head h1,
+.ui-v2.theme-vue .manual-page-head h1,
+.ui-v2.theme-vue .project-title-row h2 { color: var(--ui-text); }
+.ui-v2.theme-vue .story-command-label,
+.ui-v2.theme-vue .story-table-scene-label,
+.ui-v2.theme-vue .character-box > h2,
+.ui-v2.theme-vue .export-box > h2,
+.ui-v2.theme-vue .shot-media-pane-head strong,
+.ui-v2.theme-vue .consistency-panel-head strong,
+.ui-v2.theme-vue .shot-mode-panel strong,
+.ui-v2.theme-vue .shot-simple-rules strong,
+.ui-v2.theme-vue .settings-group-head h2 { color: var(--ui-primary-strong); }
+.ui-v2.theme-vue .project-create-head h2,
+.ui-v2.theme-vue .project-list-head h2 { color: var(--ui-text); }
+.ui-v2.theme-vue .poster-step-head strong,
+.ui-v2.theme-vue .poster-preview-head strong,
+.ui-v2.theme-vue .poster-create-actions > div > strong { color: var(--ui-ai); }
+.ui-v2.theme-vue .project-create-step-title > span,
+.ui-v2.theme-vue .shot-stage-num {
+  color: white; background: var(--ui-primary-strong);
+}
+.ui-v2.theme-vue .poster-step-head > span,
+.ui-v2.theme-vue .poster-step-number {
+  color: white; background: var(--ui-ai);
+}
+.ui-v2.theme-vue .shot-stage-heading { border-left-color: var(--ui-primary-strong); }
+
+/* 左侧导航：灰白底，绿色只用于当前项、图标和重点。 */
+.ui-v2.theme-vue .sidebar { background: var(--ui-panel); border-color: var(--ui-border); border-right-color: var(--ui-border); }
+.ui-v2.theme-vue .sidebar-nav-label { color: var(--ui-text-muted); }
+.ui-v2.theme-vue .sidebar-current { border-color: var(--ui-border); background: var(--ui-panel); }
+.ui-v2.theme-vue .sidebar-nav button {
+  color: var(--ui-text-secondary); background: transparent; border-color: transparent; box-shadow: none;
+}
+.ui-v2.theme-vue .sidebar-nav button:hover:not(:disabled) {
+  color: var(--ui-primary-strong); background: transparent; box-shadow: none; transform: none;
+}
+.ui-v2.theme-vue .sidebar-nav button.active {
+  color: var(--ui-primary-strong); background: var(--ui-primary-soft); border-color: transparent;
+}
+.ui-v2.theme-vue .sidebar-nav button.active:hover:not(:disabled) {
+  color: var(--ui-primary-strong); background: var(--ui-primary-soft);
+}
+.ui-v2.theme-vue .nav-icon { color: var(--ui-text-muted); }
+.ui-v2.theme-vue .sidebar-nav button:hover:not(:disabled) .nav-icon,
+.ui-v2.theme-vue .sidebar-nav button.active .nav-icon { color: var(--ui-primary-strong); }
+
+/* 按钮系统：主操作绿色，次操作灰白，AI/警告/危险各自独立。 */
+.ui-v2.theme-vue button {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary);
+}
+.ui-v2.theme-vue button:hover:not(:disabled) {
+  border-color: var(--ui-primary-strong); background: var(--ui-primary-hover);
+  box-shadow: 0 8px 20px rgba(47, 143, 102, .16);
+}
+.ui-v2.theme-vue button:disabled {
+  color: #9ba8a1; border-color: #e3e8e5; background: #f1f4f2; box-shadow: none;
+}
+.ui-v2.theme-vue .ghost,
+.ui-v2.theme-vue .refresh,
+.ui-v2.theme-vue .open-folder-btn,
+.ui-v2.theme-vue .tab-btn,
+.ui-v2.theme-vue .manual-tab,
+.ui-v2.theme-vue .theme-option,
+.ui-v2.theme-vue .project-template-card,
+.ui-v2.theme-vue .poster-template-card,
+.ui-v2.theme-vue .story-gen-provider-tab,
+.ui-v2.theme-vue .shot-tab,
+.ui-v2.theme-vue .shot-viewer-nav,
+.ui-v2.theme-vue .overview-shot-media-button,
+.ui-v2.theme-vue .overview-shot-refresh {
+  color: var(--ui-text-secondary); border-color: var(--ui-border); background: var(--ui-panel); box-shadow: none;
+}
+.ui-v2.theme-vue .ghost:hover:not(:disabled),
+.ui-v2.theme-vue .refresh:hover:not(:disabled),
+.ui-v2.theme-vue .open-folder-btn:hover:not(:disabled),
+.ui-v2.theme-vue .tab-btn:hover:not(:disabled),
+.ui-v2.theme-vue .manual-tab:hover:not(:disabled),
+.ui-v2.theme-vue .theme-option:hover:not(:disabled),
+.ui-v2.theme-vue .project-template-card:hover:not(:disabled),
+.ui-v2.theme-vue .poster-template-card:hover:not(:disabled),
+.ui-v2.theme-vue .story-gen-provider-tab:hover:not(:disabled),
+.ui-v2.theme-vue .shot-tab:hover:not(:disabled),
+.ui-v2.theme-vue .shot-viewer-nav:hover:not(:disabled),
+.ui-v2.theme-vue .overview-shot-refresh:hover:not(:disabled) {
+  color: var(--ui-primary-strong); border-color: var(--ui-primary); background: var(--ui-primary-soft); box-shadow: none;
+}
+.ui-v2.theme-vue .overview-shot-media-button,
+.ui-v2.theme-vue .overview-shot-media-button:hover:not(:disabled) {
+  color: inherit; border-color: transparent; background: transparent; box-shadow: none; transform: none;
+}
+.ui-v2.theme-vue .tab-btn.active,
+.ui-v2.theme-vue .manual-tab.active,
+.ui-v2.theme-vue .theme-option.active,
+.ui-v2.theme-vue .story-gen-provider-tab.active,
+.ui-v2.theme-vue .shot-tab.active {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary-strong);
+}
+.ui-v2.theme-vue .theme-option.active .theme-dot { background: white; }
+.ui-v2.theme-vue .ghost.accent,
+.ui-v2.theme-vue .shot-add-button,
+.ui-v2.theme-vue .batch-toolbar-select-all {
+  color: white; border-color: var(--ui-success); background: var(--ui-success);
+}
+.ui-v2.theme-vue .ghost.accent:hover:not(:disabled),
+.ui-v2.theme-vue .shot-add-button:hover:not(:disabled),
+.ui-v2.theme-vue .batch-toolbar-select-all:hover:not(:disabled) {
+  color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary-strong);
+}
+.ui-v2.theme-vue .ai-optimize-button {
+  color: var(--ui-ai); border-color: #fed7aa; background: var(--ui-ai-soft);
+}
+.ui-v2.theme-vue .ai-optimize-button:hover:not(:disabled) {
+  color: white; border-color: var(--ui-ai); background: var(--ui-ai);
+}
+.ui-v2.theme-vue .terminal-test-button {
+  color: var(--ui-info); border-color: #bae6fd; background: var(--ui-info-soft);
+}
+.ui-v2.theme-vue .terminal-test-button:hover:not(:disabled) {
+  color: white; border-color: var(--ui-info); background: var(--ui-info);
+}
+.ui-v2.theme-vue .ghost.danger,
+.ui-v2.theme-vue .danger {
+  color: var(--ui-danger); border-color: #fecaca; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-vue .ghost.danger:hover:not(:disabled),
+.ui-v2.theme-vue .danger:hover:not(:disabled) {
+  color: white; border-color: var(--ui-danger); background: var(--ui-danger);
+}
+.ui-v2.theme-vue .back {
+  color: var(--ui-text-muted); border-color: transparent; background: transparent; box-shadow: none;
+}
+.ui-v2.theme-vue .back:hover:not(:disabled) {
+  color: var(--ui-primary-strong); background: transparent; box-shadow: none;
+}
+.ui-v2.theme-vue .overview-ref-card,
+.ui-v2.theme-vue .overview-shot-card,
+.ui-v2.theme-vue .overview-scene-ref {
+  color: inherit; border-color: transparent; background: transparent; box-shadow: none;
+}
+.ui-v2.theme-vue .ref-pick-remove,
+.ui-v2.theme-vue .char-thumb-remove {
+  color: var(--ui-text-muted); border-color: var(--ui-border); background: var(--ui-panel); box-shadow: none;
+}
+.ui-v2.theme-vue .ref-pick-remove:hover:not(:disabled),
+.ui-v2.theme-vue .char-thumb-remove:hover:not(:disabled) {
+  color: white; border-color: var(--ui-danger); background: var(--ui-danger); box-shadow: none;
+}
+
+/* Tab/分段控件外壳：中性灰底，不铺绿色。 */
+.ui-v2.theme-vue .theme-switcher,
+.ui-v2.theme-vue .shot-mode-toggle,
+.ui-v2.theme-vue .story-view-toggle,
+.ui-v2.theme-vue .step-bar { background: var(--ui-panel-muted); }
+.ui-v2.theme-vue .step-item { color: var(--ui-text-secondary); background: transparent; }
+.ui-v2.theme-vue .step-item:hover:not(:disabled) { color: var(--ui-primary-strong); background: var(--ui-primary-soft); }
+.ui-v2.theme-vue .step-item.active { color: var(--ui-primary-strong); background: var(--ui-panel); box-shadow: inset 0 -2px var(--ui-primary-strong); }
+
+/* 卡片/表单容器：保持灰白层次，只在边框和标题里体现主题。 */
+.ui-v2.theme-vue .project-overview,
+.ui-v2.theme-vue .project-create-panel,
+.ui-v2.theme-vue .project-list,
+.ui-v2.theme-vue .settings-theme-card,
+.ui-v2.theme-vue .settings-group,
+.ui-v2.theme-vue .poster-form-section,
+.ui-v2.theme-vue .poster-preview-panel,
+.ui-v2.theme-vue .poster-create-actions,
+.ui-v2.theme-vue .text-image-form-card,
+.ui-v2.theme-vue .text-image-preview-panel,
+.ui-v2.theme-vue .story-command-panel,
+.ui-v2.theme-vue .story-table-group,
+.ui-v2.theme-vue .character-box,
+.ui-v2.theme-vue .scene-accordion,
+.ui-v2.theme-vue .scene-ref,
+.ui-v2.theme-vue .shot-media-pane,
+.ui-v2.theme-vue .shot-media-card,
+.ui-v2.theme-vue .shot-stage-heading,
+.ui-v2.theme-vue .shot-stage-content,
+.ui-v2.theme-vue .pair-row,
+.ui-v2.theme-vue .manual-search-row,
+.ui-v2.theme-vue .manual-entry,
+.ui-v2.theme-vue .reuse-item {
+  border-color: var(--ui-border); background: var(--ui-panel);
+}
+.ui-v2.theme-vue .shot-mode-panel,
+.ui-v2.theme-vue .shot-simple-rules,
+.ui-v2.theme-vue .consistency-panel,
+.ui-v2.theme-vue .project-custom-options,
+.ui-v2.theme-vue .poster-custom-template {
+  border-color: var(--ui-border); background: var(--ui-panel-soft);
+}
+.ui-v2.theme-vue .project-list li,
+.ui-v2.theme-vue .scene-row-head,
+.ui-v2.theme-vue .shot-row-head { border-color: var(--ui-border); }
+.ui-v2.theme-vue .project-list li:hover,
+.ui-v2.theme-vue .scene-row-head:hover,
+.ui-v2.theme-vue .shot-row-head:hover { background: #f4f8f6; }
+.ui-v2.theme-vue .scene-row.expanded .scene-row-head,
+.ui-v2.theme-vue .shot-row.expanded > .shot-row-head { box-shadow: inset 0 -2px var(--ui-primary-strong); }
+
+/* 状态系统：待处理/生成中/完成/失败各自语义色。 */
+.ui-v2.theme-vue .status-pending,
+.ui-v2.theme-vue .tag.status-pending,
+.ui-v2.theme-vue .asset-status-mini.status-pending,
+.ui-v2.theme-vue .settings-state.checking,
+.ui-v2.theme-vue .api-status.checking {
+  color: var(--ui-text-muted); border-color: var(--ui-border) !important; background: #f2f4f3;
+}
+.ui-v2.theme-vue .status-running,
+.ui-v2.theme-vue .tag.status-running,
+.ui-v2.theme-vue .asset-status-mini.status-running {
+  color: var(--ui-info); border-color: #bae6fd !important; background: var(--ui-info-soft);
+}
+.ui-v2.theme-vue .status-completed,
+.ui-v2.theme-vue .tag.status-completed,
+.ui-v2.theme-vue .asset-status-mini.status-completed,
+.ui-v2.theme-vue .settings-state.ready,
+.ui-v2.theme-vue .api-status.ok {
+  color: var(--ui-success); border-color: #b7e4cd !important; background: var(--ui-success-soft);
+}
+.ui-v2.theme-vue .status-failed,
+.ui-v2.theme-vue .tag.status-failed,
+.ui-v2.theme-vue .asset-status-mini.status-failed,
+.ui-v2.theme-vue .api-status.error,
+.ui-v2.theme-vue .story-gen-test-result.error {
+  color: var(--ui-danger); border-color: #fecaca !important; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-vue .status-dot.status-pending { background: #a7b2ac; }
+.ui-v2.theme-vue .status-dot.status-running { background: var(--ui-info); }
+.ui-v2.theme-vue .status-dot.status-completed { background: var(--ui-success); }
+.ui-v2.theme-vue .status-dot.status-failed { background: var(--ui-danger); }
+.ui-v2.theme-vue .pair-action.status-pending { color: white; border-color: var(--ui-primary-strong); background: var(--ui-primary); }
+.ui-v2.theme-vue .pair-action.status-running { color: white; border-color: var(--ui-info); background: var(--ui-info); }
+.ui-v2.theme-vue .pair-action.status-completed { color: var(--ui-success); border-color: #b7e4cd; background: var(--ui-panel); }
+.ui-v2.theme-vue .pair-action.status-completed:hover:not(:disabled) { color: white; border-color: var(--ui-success); background: var(--ui-success); }
+.ui-v2.theme-vue .pair-action.status-failed { color: white; border-color: var(--ui-danger); background: var(--ui-danger); }
+
+/* 标签/属性色：项目属性和生成状态分开，不混用红黄绿逻辑。 */
+.ui-v2.theme-vue .tag-status-draft { color: var(--ui-text-muted); border-color: var(--ui-border); background: #f2f4f3; }
+.ui-v2.theme-vue .tag-status-active,
+.ui-v2.theme-vue .tag-style-mode { color: var(--ui-primary-strong); border-color: #b7e4cd; background: var(--ui-primary-soft); }
+.ui-v2.theme-vue .tag-status-archived { color: var(--ui-warning); border-color: #fde68a; background: var(--ui-warning-soft); }
+.ui-v2.theme-vue .tag-content-type { color: var(--ui-info); border-color: #bae6fd; background: var(--ui-info-soft); }
+.ui-v2.theme-vue .tag-exported { color: var(--ui-success); border-color: #b7e4cd; background: var(--ui-success-soft); }
+.ui-v2.theme-vue .model-tag,
+.ui-v2.theme-vue .model-ref-hint code { color: var(--ui-primary-strong); background: var(--ui-primary-soft); }
+
+/* 警告/错误/提示：警告用琥珀，错误用红，普通说明不抢主按钮。 */
+.ui-v2.theme-vue .warning-box,
+.ui-v2.theme-vue .hint-warning {
+  color: var(--ui-warning); border-color: #fde68a; background: var(--ui-warning-soft);
+}
+.ui-v2.theme-vue .warning-box { border-left-color: var(--ui-warning); }
+.ui-v2.theme-vue .error,
+.ui-v2.theme-vue .ai-optimize-error { color: var(--ui-danger); }
+.ui-v2.theme-vue .file-open-toast {
+  color: var(--ui-danger); border-color: #fecaca; background: var(--ui-danger-soft);
+}
+.ui-v2.theme-vue .story-gen-test-result.ok { color: var(--ui-success); background: var(--ui-success-soft); border-color: #b7e4cd; }
 
 @media (max-width: 640px) {
   .shell.ui-v2 { padding: 0; }
@@ -6497,8 +7513,12 @@ button:disabled { opacity: 0.5; cursor: default; }
   .ui-v2 .shot-row-body { grid-template-columns: 1fr; }
   .ui-v2 .shot-media-pane { display: grid; grid-template-columns: 1fr 1fr; }
   .ui-v2 .shot-media-pane-head, .ui-v2 .shot-media-card-audio { grid-column: 1 / -1; }
-  .ui-v2 .pair-row.shot-stage-content { grid-template-columns: 1fr; }
-  .ui-v2 .pair-row.shot-stage-content .pair-media { max-width: 180px; }
+  .ui-v2 .shot-mode-panel,
+  .ui-v2 .shot-simple-rules { align-items: stretch; flex-direction: column; }
+  .ui-v2 .shot-mode-toggle { width: fit-content; }
+  .ui-v2 .shot-simple-rule-list { justify-content: flex-start; }
+  .ui-v2 .shot-row-body-simple .shot-stage-content { grid-template-columns: 1fr; }
+  .ui-v2 .shot-row-body-simple .pair-media { max-width: 240px; }
   .ui-v2 .project-create-form { grid-template-columns: 1fr; }
   .ui-v2 .project-create-form > button { min-height: 34px; }
   .ui-v2 .projects-page-head { align-items: flex-start; }
@@ -6515,8 +7535,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   .ui-v2 .consistency-item-wide { grid-column: auto; }
   .ui-v2 .settings-page { grid-template-columns: 1fr; }
   .ui-v2 .settings-page > .back, .ui-v2 .settings-page-head,
-  .ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
+  .ui-v2 .settings-theme-card, .ui-v2 .settings-group-primary, .ui-v2 .settings-actions,
   .ui-v2 .settings-tabs { grid-column: auto; }
+  .ui-v2 .settings-theme-card { align-items: stretch; flex-direction: column; }
   .ui-v2 .story-gen-provider-tabs { grid-template-columns: 1fr; }
   .ui-v2 .settings-actions { align-items: stretch; flex-direction: column; }
   .ui-v2 .update-card { align-items: stretch; flex-direction: column; }

@@ -22,7 +22,7 @@ router = APIRouter(prefix="/posters", tags=["posters"])
 
 StyleMode = Literal["comic", "realistic", "render3d", "freeform"]
 Orientation = Literal["portrait", "landscape", "9:16", "1:1", "4:3"]
-LayoutMode = Literal["title", "textBlocks"]
+LayoutMode = Literal["title", "textBlocks", "infographic"]
 
 
 def _parse_body_lines(raw: Optional[str]) -> list[str]:
@@ -78,8 +78,8 @@ class CreatePosterBody(BaseModel):
     # 只有没选模版时才生效，决定排版方式；选了模版就用模版自己的 layoutMode，
     # 忽略这个字段。
     layoutMode: LayoutMode = "title"
-    # layoutMode 最终解析成 'textBlocks' 时必填：每一项是一行正文，支持
-    # "项目名|价格" 这种竖线分隔的两栏格式(价格右对齐)，价格表/知识卡片场景用。
+    # layoutMode 最终解析成 textBlocks/infographic 时必填。infographic 支持用
+    # "# 分区标题" 分组，生成类似攻略/科普/对比类复杂卡片海报。
     bodyLines: Optional[list[str]] = None
     styleMode: StyleMode = DEFAULT_STYLE_MODE
     title: str
@@ -120,10 +120,10 @@ def create_poster(body: CreatePosterBody):
         )
 
         body_lines_json = None
-        if layout_mode == "textBlocks":
+        if layout_mode in ("textBlocks", "infographic"):
             lines = [line.strip() for line in (body.bodyLines or []) if line and line.strip()]
             if not lines:
-                raise HTTPException(400, "多行正文排版至少要填一行内容")
+                raise HTTPException(400, "正文排版至少要填一行内容")
             body_lines_json = json.dumps(lines, ensure_ascii=False)
 
         if body.projectId:
@@ -209,7 +209,8 @@ def _run_poster_generation(
             subtitle=subtitle,
             dest_path=dest,
             font_path=font_path,
-            body_lines=body_lines if layout_mode == "textBlocks" else None,
+            body_lines=body_lines if layout_mode in ("textBlocks", "infographic") else None,
+            layout_mode=layout_mode,
         )
         with get_connection() as conn:
             conn.execute(
@@ -298,7 +299,8 @@ def update_poster_text(poster_id: str, body: UpdatePosterTextBody):
                     subtitle=subtitle,
                     dest_path=poster["filePath"] or poster["backgroundPath"],
                     font_path=font_path,
-                    body_lines=body_lines if poster["layoutMode"] == "textBlocks" else None,
+                    body_lines=body_lines if poster["layoutMode"] in ("textBlocks", "infographic") else None,
+                    layout_mode=poster["layoutMode"],
                 )
                 conn.execute('UPDATE "Poster" SET error = NULL WHERE id = ?', (poster_id,))
             except PosterComposeError as exc:

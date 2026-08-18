@@ -13,11 +13,10 @@ from app.services.story_generator import StoryGenerationError, generate_freeform
 router = APIRouter(prefix="/prompts", tags=["prompts"])
 
 _OPTIMIZE_SYSTEM_PROMPT = (
-    "你是一个专业的 AI 绘画/视频生成提示词优化助手。用户会给你一段现有的画面生成提示词，"
-    "你的任务是把它改写得更清晰、更具体、细节更丰富(比如补充构图、光线、材质、氛围等画面"
-    "细节)，从而提高 AI 生成图片/视频的质量和准确度。但不要改变原提示词想表达的核心内容，"
-    "不要凭空添加与原意无关的新元素或角色。只输出优化后的提示词本身，不要加任何解释、前后缀"
-    "或引号。"
+    "你是一个专业的火山方舟 Seedream/Seedance 提示词优化助手。用户会给你一段已有提示词，"
+    "你要根据场景把它改写成更适合火山模型理解的生成提示：主体明确、场景明确、镜头/构图明确、"
+    "光线色彩明确、材质细节明确、负面约束明确。不要改变原始意图，不要凭空新增无关人物、品牌、"
+    "价格或事实。只输出优化后的提示词本身，不要解释、不要 Markdown、不要引号。"
 )
 
 
@@ -30,7 +29,30 @@ class OptimizePromptBody(BaseModel):
 
 def _build_optimize_instruction(prompt: str, context: Optional[str]) -> str:
     context_line = f"场景背景：{context.strip()}\n\n" if context and context.strip() else ""
-    return f"{context_line}原始提示词：\n{prompt.strip()}"
+    rules = [
+        "通用规则：中文语义清楚，避免含糊词；保留用户核心内容；结尾补充稳定质量词和负面约束。",
+    ]
+    ctx = (context or "").lower()
+    if any(x in ctx for x in ["海报", "poster"]):
+        rules.append(
+            "海报规则：如果是宣传/攻略/科普/对比类海报，只让 Seedream 生成无文字背景、插画/照片素材感、"
+            "卡片式留白和版面氛围；不要要求模型直接写中文标题、正文、数字或 logo，文字会由程序后期排版。"
+        )
+        rules.append(
+            "复杂信息图规则：描述清楚版式气质，例如攻略信息图、分区卡片、编号列表、城市/交通/美食元素、"
+            "顶部主视觉、浅色纸张质感、彩色标签、干净分栏；但仍然强调无文字。"
+        )
+    if any(x in ctx for x in ["视频", "运镜", "seedance", "图生视频"]):
+        rules.append(
+            "Seedance 视频规则：写成一段可执行运镜，包含镜头运动、主体动作、节奏、景别、时长感；"
+            "不要写静态海报排版指令，不要要求出现字幕文字。"
+        )
+    if any(x in ctx for x in ["seedream", "文生图", "分镜", "角色", "场景", "图片"]):
+        rules.append(
+            "Seedream 图片规则：补充画面主体、环境、景别、构图、光线、色调、真实/插画风格、细节质量；"
+            "角色/场景/镜头一致性描述要具体，避免抽象口号。"
+        )
+    return f"{context_line}{chr(10).join(rules)}\n\n原始提示词：\n{prompt.strip()}"
 
 
 @router.post("/optimize")

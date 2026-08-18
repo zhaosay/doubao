@@ -100,6 +100,232 @@ def _wrap_by_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTyp
     return lines
 
 
+def _split_infographic_sections(body_lines: list[str]) -> list[tuple[str, list[str]]]:
+    """信息图正文支持用 "# 小标题" 分区；不写分区时自动归到"重点信息"。
+    普通用户直接一行一条写也能用，想做攻略类复杂海报时再手动加几个分区标题。
+    """
+    sections: list[tuple[str, list[str]]] = []
+    current_title = "重点信息"
+    current_items: list[str] = []
+    for raw in body_lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if current_items:
+                sections.append((current_title, current_items))
+            current_title = line.lstrip("#").strip() or "重点信息"
+            current_items = []
+        else:
+            current_items.append(line)
+    if current_items:
+        sections.append((current_title, current_items))
+    return sections or [("重点信息", [])]
+
+
+def _draw_round_box(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int, int, int],
+    *,
+    fill: tuple[int, int, int, int],
+    outline: tuple[int, int, int, int],
+    radius: int,
+    width: int = 2,
+) -> None:
+    draw.rounded_rectangle(xy, radius=radius, fill=fill, outline=outline, width=width)
+
+
+def _draw_wrapped_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    xy: tuple[int, int],
+    font: ImageFont.FreeTypeFont,
+    *,
+    max_width: int,
+    fill: tuple[int, int, int, int],
+    line_gap: int,
+    max_lines: int | None = None,
+) -> int:
+    lines = _wrap_by_width(draw, text, font, max_width)
+    if max_lines is not None:
+        lines = lines[:max_lines]
+    x, y = xy
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=fill)
+        bbox = draw.textbbox((0, 0), line or "国", font=font)
+        y += bbox[3] - bbox[1] + line_gap
+    return y
+
+
+def _compose_infographic_poster(
+    *,
+    background_path: str,
+    title: str,
+    subtitle: str | None,
+    dest_path: str,
+    font_path: str | None,
+    body_lines: list[str],
+) -> None:
+    """复杂攻略/科普信息图排版：顶部大标题 + 多分区卡片网格 + 底部提示。
+    参考用户给的首尔攻略/出租车科普/出行方式对比图，核心是"多模块、卡片化、编号、
+    强主次"，而不是只在底部压一条标题。
+    """
+    resolved_font = resolve_poster_font(font_path)
+    with Image.open(background_path) as bg:
+        img = bg.convert("RGBA")
+    w, h = img.size
+    draw = ImageDraw.Draw(img)
+
+    # 用浅色纸张层盖住 AI 背景，保留一点氛围，但保证大量中文可读。
+    paper = Image.new("RGBA", (w, h), (255, 250, 240, 224))
+    img = Image.alpha_composite(img, paper)
+    draw = ImageDraw.Draw(img)
+
+    margin = int(min(w, h) * 0.035)
+    gap = int(min(w, h) * 0.014)
+    radius = int(min(w, h) * 0.014)
+    title_font = _fit_font_size(draw, title, resolved_font, w - margin * 2, int(h * 0.07), 34)
+    subtitle_font = ImageFont.truetype(str(resolved_font), max(22, int(h * 0.022)))
+    section_font = ImageFont.truetype(str(resolved_font), max(24, int(h * 0.026)))
+    item_title_font = ImageFont.truetype(str(resolved_font), max(18, int(h * 0.019)))
+    item_font = ImageFont.truetype(str(resolved_font), max(15, int(h * 0.016)))
+    small_font = ImageFont.truetype(str(resolved_font), max(13, int(h * 0.014)))
+
+    palette = [
+        ((37, 99, 235, 255), (239, 246, 255, 236), (191, 219, 254, 255)),
+        ((22, 163, 74, 255), (240, 253, 244, 236), (187, 247, 208, 255)),
+        ((234, 88, 12, 255), (255, 247, 237, 236), (254, 215, 170, 255)),
+        ((219, 39, 119, 255), (253, 242, 248, 236), (251, 207, 232, 255)),
+        ((126, 34, 206, 255), (250, 245, 255, 236), (221, 214, 254, 255)),
+    ]
+
+    # 顶部主标题区。
+    y = margin
+    draw.text((margin, y), title, font=title_font, fill=(10, 15, 25, 255))
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
+    y += title_bbox[3] - title_bbox[1] + int(gap * 0.6)
+    if subtitle and subtitle.strip():
+        _draw_round_box(
+            draw,
+            (margin, y, w - margin, y + int(h * 0.042)),
+            fill=(255, 255, 255, 210),
+            outline=(245, 158, 11, 180),
+            radius=radius,
+            width=2,
+        )
+        draw.text((margin + gap, y + int(gap * 0.4)), subtitle.strip(), font=subtitle_font, fill=(194, 65, 12, 255))
+        y += int(h * 0.05)
+
+    sections = _split_infographic_sections(body_lines)
+    content_top = y + gap
+    footer_h = int(h * 0.055)
+    content_bottom = h - margin - footer_h
+    columns = 3 if w >= h else 2
+    card_w = (w - margin * 2 - gap * (columns - 1)) // columns
+
+    # 每个 section 变成一张大卡，大卡内部前几条以编号条目呈现；内容多时自动多卡分布。
+    cards: list[tuple[str, list[str], int]] = []
+    for idx, (section_title, items) in enumerate(sections):
+        chunk_size = 5 if columns == 2 else 4
+        chunks = [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)] or [[]]
+        for chunk_idx, chunk in enumerate(chunks):
+            title_text = section_title if chunk_idx == 0 else f"{section_title} {chunk_idx + 1}"
+            cards.append((title_text, chunk, idx))
+
+    rows = max(1, (len(cards) + columns - 1) // columns)
+    card_h = max(int(h * 0.18), (content_bottom - content_top - gap * (rows - 1)) // rows)
+    card_h = min(card_h, int(h * 0.28))
+
+    for idx, (section_title, items, section_idx) in enumerate(cards[: columns * rows]):
+        col = idx % columns
+        row = idx // columns
+        x1 = margin + col * (card_w + gap)
+        y1 = content_top + row * (card_h + gap)
+        x2 = x1 + card_w
+        y2 = min(y1 + card_h, content_bottom)
+        accent, fill, outline = palette[section_idx % len(palette)]
+        _draw_round_box(draw, (x1, y1, x2, y2), fill=fill, outline=outline, radius=radius, width=2)
+
+        badge = int(min(card_w, card_h) * 0.16)
+        draw.ellipse((x1 + gap, y1 + gap, x1 + gap + badge, y1 + gap + badge), fill=accent)
+        badge_text = str(section_idx + 1)
+        bb = draw.textbbox((0, 0), badge_text, font=section_font)
+        draw.text(
+            (x1 + gap + (badge - (bb[2] - bb[0])) / 2, y1 + gap + (badge - (bb[3] - bb[1])) / 2 - 2),
+            badge_text,
+            font=section_font,
+            fill=(255, 255, 255, 255),
+        )
+        title_x = x1 + gap + badge + int(gap * 0.7)
+        title_y = y1 + gap + int(badge * 0.12)
+        _draw_wrapped_text(
+            draw,
+            section_title,
+            (title_x, title_y),
+            section_font,
+            max_width=x2 - title_x - gap,
+            fill=(17, 24, 39, 255),
+            line_gap=2,
+            max_lines=1,
+        )
+
+        item_y = y1 + gap + badge + int(gap * 0.65)
+        for item_idx, item in enumerate(items[:6]):
+            if item_y > y2 - int(gap * 1.5):
+                break
+            if "|" in item:
+                left, _, right = item.partition("|")
+                title_text = left.strip()
+                body_text = right.strip()
+            elif "：" in item:
+                title_text, _, body_text = item.partition("：")
+            elif ":" in item:
+                title_text, _, body_text = item.partition(":")
+            else:
+                title_text, body_text = item, ""
+
+            dot_r = max(7, int(item_font.size * 0.45))
+            draw.ellipse((x1 + gap, item_y + 3, x1 + gap + dot_r, item_y + 3 + dot_r), fill=accent)
+            text_x = x1 + gap + dot_r + 8
+            draw.text((text_x, item_y), title_text.strip(), font=item_title_font, fill=(17, 24, 39, 255))
+            item_y += item_title_font.size + 2
+            if body_text.strip():
+                item_y = _draw_wrapped_text(
+                    draw,
+                    body_text.strip(),
+                    (text_x, item_y),
+                    item_font,
+                    max_width=x2 - text_x - gap,
+                    fill=(55, 65, 81, 255),
+                    line_gap=2,
+                    max_lines=2,
+                )
+            item_y += int(gap * 0.5)
+
+    # 底部收口条，模拟攻略海报常见的 slogan/提示栏。
+    footer_y = h - margin - footer_h
+    _draw_round_box(
+        draw,
+        (margin, footer_y, w - margin, h - margin),
+        fill=(37, 99, 235, 235),
+        outline=(191, 219, 254, 255),
+        radius=radius,
+        width=2,
+    )
+    footer_text = subtitle.strip() if subtitle and subtitle.strip() else "信息仅供参考，请以实际情况为准"
+    footer_font = _fit_font_size(draw, footer_text, resolved_font, w - margin * 3, int(footer_h * 0.42), 16)
+    bb = draw.textbbox((0, 0), footer_text, font=footer_font)
+    draw.text(
+        (margin + (w - margin * 2 - (bb[2] - bb[0])) / 2, footer_y + (footer_h - (bb[3] - bb[1])) / 2 - 2),
+        footer_text,
+        font=footer_font,
+        fill=(255, 255, 255, 255),
+    )
+
+    Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+    img.convert("RGB").save(dest_path, quality=94)
+
+
 def compose_poster(
     *,
     background_path: str,
@@ -108,6 +334,7 @@ def compose_poster(
     dest_path: str,
     font_path: str | None = None,
     body_lines: list[str] | None = None,
+    layout_mode: str = "title",
 ) -> None:
     """把标题/副标题(+可选的多行正文 body_lines)叠到背景图底部，加一条从透明到半透明
     黑的渐变遮罩band垫在文字下面——海报设计的常见手法，不然文字直接盖在复杂背景图上
@@ -118,6 +345,17 @@ def compose_poster(
     换行)，也可以是"项目名|价格"这种用竖线分隔的两栏格式(价格右对齐)，方便一行内同时
     放名称和数字对齐美观。普通宣传海报不传这个参数，行为跟以前完全一样。
     """
+    if layout_mode == "infographic":
+        _compose_infographic_poster(
+            background_path=background_path,
+            title=title,
+            subtitle=subtitle,
+            dest_path=dest_path,
+            font_path=font_path,
+            body_lines=body_lines or [],
+        )
+        return
+
     resolved_font = resolve_poster_font(font_path)
 
     with Image.open(background_path) as bg:

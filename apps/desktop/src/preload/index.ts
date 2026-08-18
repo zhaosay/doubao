@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('aiManju', {
   downloadUpdate: () => ipcRenderer.invoke('app-update-download'),
   installUpdate: () => ipcRenderer.invoke('app-update-install'),
   openLatestRelease: () => ipcRenderer.invoke('app-update-open-release'),
+  getAiServiceStatus: () => ipcRenderer.invoke('ai-service-status'),
+  restartAiService: () => ipcRenderer.invoke('ai-service-restart'),
   onUpdateStatus: (callback: (status: unknown) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, status: unknown) => callback(status)
     ipcRenderer.on('app-update-status', listener)

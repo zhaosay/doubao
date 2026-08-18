@@ -55,6 +55,13 @@ function findAvailablePort(preferred: number): Promise<number> {
 }
 
 let aiServiceProcess: ChildProcess | null = null
+let aiServiceStatus = {
+  state: 'stopped' as 'starting' | 'running' | 'stopped' | 'error',
+  port: AI_SERVICE_PORT,
+  pid: null as number | null,
+  message: '本地服务尚未启动',
+  lastError: ''
+}
 let updaterReady = false
 let updateDownloaded = false
 let startupUpdateCheckScheduled = false
@@ -419,16 +426,29 @@ function resolveAiServiceRuntime(): AiServiceRuntime {
  * - 子进程输出转发到 electron 的 stdout，方便看后端日志/报错
  */
 function startAiService(): void {
+  if (aiServiceProcess) return
+  aiServiceStatus = {
+    ...aiServiceStatus,
+    state: 'starting',
+    port: AI_SERVICE_PORT,
+    pid: null,
+    message: '正在启动本地 ai-service',
+    lastError: ''
+  }
   let runtime: AiServiceRuntime
   try {
     runtime = resolveAiServiceRuntime()
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    aiServiceStatus = { ...aiServiceStatus, state: 'error', message: '准备运行环境失败', lastError: detail }
     console.error('[ai-service] 准备运行环境失败:', err)
     return
   }
   const { pythonBin, aiServiceDir, extraEnv } = runtime
   if (!existsSync(aiServiceDir)) {
-    console.error(`[ai-service] 找不到目录: ${aiServiceDir}，跳过启动后端`)
+    const detail = `找不到目录: ${aiServiceDir}`
+    aiServiceStatus = { ...aiServiceStatus, state: 'error', message: '找不到 ai-service 目录', lastError: detail }
+    console.error(`[ai-service] ${detail}，跳过启动后端`)
     return
   }
 
@@ -438,13 +458,32 @@ function startAiService(): void {
     { cwd: aiServiceDir, stdio: 'pipe', env: { ...process.env, ...extraEnv } }
   )
 
+  aiServiceStatus = {
+    ...aiServiceStatus,
+    state: 'running',
+    pid: aiServiceProcess.pid ?? null,
+    message: `ai-service 已启动，端口 ${AI_SERVICE_PORT}`
+  }
+
   aiServiceProcess.stdout?.on('data', (chunk) => process.stdout.write(`[ai-service] ${chunk}`))
-  aiServiceProcess.stderr?.on('data', (chunk) => process.stderr.write(`[ai-service] ${chunk}`))
+  aiServiceProcess.stderr?.on('data', (chunk) => {
+    const text = String(chunk).trim()
+    if (text) aiServiceStatus = { ...aiServiceStatus, lastError: text.slice(-1200) }
+    process.stderr.write(`[ai-service] ${chunk}`)
+  })
   aiServiceProcess.on('exit', (code) => {
+    aiServiceStatus = {
+      ...aiServiceStatus,
+      state: code === 0 ? 'stopped' : 'error',
+      pid: null,
+      message: `ai-service 已退出，code=${code ?? 'unknown'}`
+    }
     console.log(`[ai-service] 进程退出，code=${code}`)
     aiServiceProcess = null
   })
   aiServiceProcess.on('error', (err) => {
+    const detail = err instanceof Error ? err.message : String(err)
+    aiServiceStatus = { ...aiServiceStatus, state: 'error', pid: null, message: 'ai-service 启动失败', lastError: detail }
     console.error('[ai-service] 启动失败:', err)
   })
 }
@@ -716,6 +755,14 @@ ipcMain.handle('app-update-install', async () => {
 ipcMain.handle('app-update-open-release', async () => {
   await shell.openExternal(DOWNLOAD_PAGE_URL)
   return true
+})
+
+ipcMain.handle('ai-service-status', async () => aiServiceStatus)
+
+ipcMain.handle('ai-service-restart', async () => {
+  stopAiService()
+  startAiService()
+  return aiServiceStatus
 })
 
 app.whenReady().then(async () => {

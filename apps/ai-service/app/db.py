@@ -309,12 +309,32 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
             "色调柔和易读。",
             "textBlocks",
         ),
+        (
+            "poster-tpl-travel-guide", "攻略信息图",
+            "旅游/商圈/美食攻略信息图背景，浅色纸张质感，活泼但高级的旅行手账风，顶部主视觉"
+            "可出现城市地标、街景、交通、美食小图标、地图路线感元素；画面适合后期叠加大量中文"
+            "卡片信息、编号榜单和路线建议，必须留出清晰分区空间，不要生成任何文字。",
+            "infographic",
+        ),
+        (
+            "poster-tpl-transport-compare", "交通方式对比",
+            "城市出行方式对比信息图背景，现代旅行攻略风，地铁、公交、出租车三类交通元素，"
+            "蓝绿橙三色分栏视觉，干净卡片式结构，适合后期叠加价格、优缺点、适合人群等大量中文信息，"
+            "不要生成任何文字。",
+            "infographic",
+        ),
+        (
+            "poster-tpl-taxi-guide", "出租车科普",
+            "韩国出租车/海外打车攻略信息图背景，明亮旅行科普风，出租车、城市天际线、手机叫车、"
+            "费用参考、注意事项等视觉元素，适合后期叠加多个卡片模块和编号说明，不要生成任何文字。",
+            "infographic",
+        ),
     ]
 
     def _seed_default_poster_templates() -> None:
         for tpl_id, label, prompt_text, layout_mode in _DEFAULT_POSTER_TEMPLATES:
             conn.execute(
-                'INSERT INTO "PosterTemplate" (id, label, promptText, layoutMode, createdAt) '
+                'INSERT OR IGNORE INTO "PosterTemplate" (id, label, promptText, layoutMode, createdAt) '
                 "VALUES (?, ?, ?, ?, ?)",
                 (tpl_id, label, prompt_text, layout_mode, now_iso()),
             )
@@ -341,6 +361,8 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         if "layoutMode" not in template_cols:
             conn.execute('ALTER TABLE "PosterTemplate" ADD COLUMN "layoutMode" TEXT NOT NULL DEFAULT \'title\'')
             conn.commit()
+        _seed_default_poster_templates()
+        conn.commit()
 
     if "Poster" not in tables:
         # 海报是独立的一级功能，不需要先建视频项目/写完剧本才能出海报。projectId 可选，
