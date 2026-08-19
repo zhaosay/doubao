@@ -48,6 +48,8 @@ ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/plan/v3"
 # 已有用户曾把 beijing.volces 中间的点漏掉。该拼写会连到不存在的 TLS 主机，
 # 表现成容易误导人的 SSLEOFError；在客户端边界统一修正，旧的本地设置也能继续使用。
 ARK_BASE_URL_TYPOS = {
+    "ark.cn-bejing.volces.com": "ark.cn-beijing.volces.com",
+    "ark.cn-bejingvolces.com": "ark.cn-beijing.volces.com",
     "ark.cn-beijingwolces.com": "ark.cn-beijing.volces.com",
     "ark.cn-beijingvolces.com": "ark.cn-beijing.volces.com",
 }
