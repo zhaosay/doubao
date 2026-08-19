@@ -45,6 +45,20 @@ except ImportError:  # 理论上 requirements.txt 里已经加了 Pillow，这�
 # 跟"开通管理"里给普通按量付费用的 API Key 不是同一把，两者不能混用。
 ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/plan/v3"
 
+# 已有用户曾把 beijing.volces 中间的点漏掉。该拼写会连到不存在的 TLS 主机，
+# 表现成容易误导人的 SSLEOFError；在客户端边界统一修正，旧的本地设置也能继续使用。
+ARK_BASE_URL_TYPOS = {
+    "ark.cn-beijingwolces.com": "ark.cn-beijing.volces.com",
+    "ark.cn-beijingvolces.com": "ark.cn-beijing.volces.com",
+}
+
+
+def normalize_base_url(base_url: str | None) -> str:
+    normalized = (base_url or ARK_BASE_URL).strip().rstrip("/")
+    for typo, correct in ARK_BASE_URL_TYPOS.items():
+        normalized = normalized.replace(typo, correct)
+    return normalized
+
 # 用户确认过账号(Large 套餐)配置文件里点名支持的模型，直接用这两个当默认值：
 # doubao-seedance-2.0 / doubao-seedance-2.0-fast / doubao-seedance-2.0-mini 三选一，
 # 1.5-pro 已经是"即将下线"禁止新项目接入；模型名必须显式指定，不支持 auto。
@@ -118,7 +132,10 @@ def _with_retry(action: str, fn):
                 raise
         except requests.exceptions.RequestException as exc:
             # 网络层错误(超时/连接重置)本身就是临时性的，也纳入重试
-            last_exc = ArkError(f"{action}网络请求异常: {exc}", retryable=True)
+            hint = ""
+            if isinstance(exc, requests.exceptions.SSLError):
+                hint = "（已尝试绕过系统代理直连且仍失败，请检查 Windows 代理、杀毒软件 HTTPS 扫描或网络防火墙。）"
+            last_exc = ArkError(f"{action}网络请求异常: {exc}{hint}", retryable=True)
             if attempt == MAX_RETRY_ATTEMPTS:
                 raise last_exc from exc
         delay = RETRY_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
@@ -132,6 +149,23 @@ def _headers(api_key: str) -> dict:
     if not api_key:
         raise ArkError("未配置火山方舟 API Key，请先在设置页填写")
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _ark_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """先按用户的网络设置访问；TLS 握手被错误代理中断时，再安全地直连一次。
+
+    不会关闭证书验证。仅忽略代理环境变量，避免某些 Windows 代理/安全软件对
+    ark.cn-beijing.volces.com 的 HTTPS 检查在 ClientHello 阶段直接断开连接。
+    """
+    try:
+        return requests.request(method, url, **kwargs)
+    except requests.exceptions.SSLError as proxy_error:
+        with requests.Session() as direct_session:
+            direct_session.trust_env = False
+            try:
+                return direct_session.request(method, url, **kwargs)
+            except requests.exceptions.SSLError as direct_error:
+                raise direct_error from proxy_error
 
 
 # 参考图直接塞进 JSON 请求体里传给 Ark(base64)，不是走文件上传接口。用户现在可以用
@@ -194,6 +228,7 @@ def generate_image(
     base_url: str = ARK_BASE_URL,
 ) -> str:
     """调用 images/generations，返回生成图片的 URL（火山云存储链接，有效期24小时，调用方需尽快下载落盘）。"""
+    base_url = normalize_base_url(base_url)
     body: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
@@ -206,7 +241,8 @@ def generate_image(
         body["image"] = reference_image_urls if len(reference_image_urls) > 1 else reference_image_urls[0]
 
     def _do_request() -> str:
-        resp = requests.post(
+        resp = _ark_request(
+            "POST",
             f"{base_url.rstrip('/')}/images/generations",
             headers=_headers(api_key),
             json=body,
@@ -239,13 +275,15 @@ def chat_completion(
     这里不重试/不降级：优化提示词是一次性、用户主动点按钮触发的操作，失败了让用户
     自己决定要不要再点一次，不像图片/视频生成那样值得自动重试。
     """
+    base_url = normalize_base_url(base_url)
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     body = {"model": model, "messages": messages}
 
-    resp = requests.post(
+    resp = _ark_request(
+        "POST",
         f"{base_url.rstrip('/')}/chat/completions",
         headers=_headers(api_key),
         json=body,
@@ -281,6 +319,7 @@ def create_video_task(
     `model` 参数——调用方(SeedanceVideoProvider)要把这个"实际用的模型"存进 Asset.model，
     UI 上显示的才是准确的，不然配置页写的是 2.0，实际这条视频其实是 -fast 出的，误导用户。
     """
+    base_url = normalize_base_url(base_url)
     prompt_with_flags = f"{prompt} --ratio {ratio} --dur {duration} --rs {resolution}"
     image_data_uri = _file_to_data_uri(start_image_path)
 
@@ -298,7 +337,8 @@ def create_video_task(
             ],
             "generate_audio": False,
         }
-        resp = requests.post(
+        resp = _ark_request(
+            "POST",
             f"{base_url.rstrip('/')}/contents/generations/tasks",
             headers=_headers(api_key),
             json=body,
@@ -332,13 +372,15 @@ def create_video_task(
 
 def poll_video_task(*, api_key: str, task_id: str, base_url: str = ARK_BASE_URL) -> str:
     """轮询任务直到成功/失败，返回视频 URL（有效期24小时）。最长等待 20 分钟。"""
+    base_url = normalize_base_url(base_url)
     deadline = time.time() + POLL_MAX_WAIT_SEC
     headers = {"Authorization": f"Bearer {api_key}"}
     consecutive_poll_errors = 0
 
     while time.time() < deadline:
         try:
-            resp = requests.get(
+            resp = _ark_request(
+                "GET",
                 f"{base_url.rstrip('/')}/contents/generations/tasks/{task_id}", headers=headers, timeout=30
             )
         except requests.exceptions.RequestException as exc:

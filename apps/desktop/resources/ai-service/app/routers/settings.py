@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db import get_connection, get_settings
+from app.services import ark_client
 from app.services.story_generator import detect_claude_cli, test_anthropic_api, test_claude_cli
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -282,7 +283,9 @@ def update_settings(body: UpdateSettingsBody):
         current = get_settings(conn)
 
         ark_api_key = body.arkApiKey if body.arkApiKey is not None else current.get("arkApiKey")
-        ark_base_url = body.arkBaseUrl if body.arkBaseUrl is not None else current.get("arkBaseUrl")
+        ark_base_url = ark_client.normalize_base_url(
+            body.arkBaseUrl if body.arkBaseUrl is not None else current.get("arkBaseUrl")
+        )
         ark_image_model = (
             body.arkImageModel if body.arkImageModel is not None else current.get("arkImageModel")
         )
