@@ -4,8 +4,10 @@ import {
   BookOpen,
   Clapperboard,
   FileVideo2,
+  FolderOpen,
   Images,
   ListVideo,
+  Play,
   Settings,
   Wand2
 } from '@lucide/vue'
@@ -269,6 +271,25 @@ interface ProjectSummary {
   createdAt: string
   // 最近一次导出成片成功的时间，null = 还没导出过，项目列表靠它显示"已导出"标签。
   lastExportedAt: string | null
+  progress?: ProjectProgress
+}
+
+interface ProjectProgress {
+  story: { done: number; total: number }
+  scenes: { done: number; total: number }
+  characters: { done: number; total: number }
+  shots: { total: number; imageDone: number; videoDone: number }
+}
+
+const EMPTY_PROJECT_PROGRESS: ProjectProgress = {
+  story: { done: 0, total: 0 },
+  scenes: { done: 0, total: 0 },
+  characters: { done: 0, total: 0 },
+  shots: { total: 0, imageDone: 0, videoDone: 0 }
+}
+
+function projectProgress(project: ProjectSummary): ProjectProgress {
+  return project.progress ?? EMPTY_PROJECT_PROGRESS
 }
 
 interface Shot {
@@ -507,7 +528,7 @@ type SettingsTab = 'theme' | 'general' | 'story' | 'indextts' | 'generation' | '
 const settingsTab = ref<SettingsTab>('general')
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'theme', label: '界面主题' },
-  { id: 'general', label: '火山方舟模型配置' },
+  { id: 'general', label: '视频生成模型' },
   { id: 'story', label: 'AI生成剧本配置' },
   { id: 'indextts', label: 'IndexTTS 配音配置' },
   { id: 'generation', label: '生成与导出' },
@@ -519,7 +540,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 // 默认 claude_cli，跟后端 Setting.storyGenProvider 的默认值保持一致；只有用户主动
 // 配好第三方 API 并切换过来，才会改用 api 方式，避免"什么都没配就被切走"。
 const storyGenForm = reactive({
-  provider: 'claude_cli' as 'claude_cli' | 'api',
+  provider: 'claude_cli' as 'claude_cli' | 'api' | 'ark',
   // claude_cli 模式的手动覆盖路径，留空 = 走自动检测（PATH 查找 + Windows 常见安装
   // 目录扫描 + npm 全局 prefix 动态查询 + 僵尸 shim 识别）。填了就只认这一个路径，
   // 给自动检测找不到/找错的情况一个逃生舱口。
@@ -527,8 +548,15 @@ const storyGenForm = reactive({
   apiBaseUrl: '',
   apiKey: '',
   apiModel: '',
-  apiMaxTokens: 4096
+  apiMaxTokens: 4096,
+  prompt: '',
+  template: 'vertical_short_drama'
 })
+const STORY_TEMPLATE_OPTIONS = [
+  { id: 'vertical_short_drama', label: '标准竖屏短剧', help: '起承转合，适合大多数剧情项目' },
+  { id: 'service_promo', label: '服务宣传短剧', help: '突出痛点、服务过程和行动引导' },
+  { id: 'knowledge_story', label: '知识科普短剧', help: '用场景讲清一个知识点' }
+]
 const storyGenInfo = reactive({ apiKeySet: false, apiKeyMasked: '' })
 interface StoryGenTestState {
   testing: boolean
@@ -828,6 +856,21 @@ function samplePosterBodyLines(layoutMode: PosterLayoutMode, label = ''): string
         '小贴士：建议用 Kakao T / Uber 叫车',
       ].join('\n')
     }
+    if (label.includes('医院') || label.includes('医美')) {
+      return [
+        '# 服务重点',
+        '专业咨询：根据个人需求制定沟通方案',
+        '翻译陪同：预约、到院和沟通全程协助',
+        '安心服务：流程清晰，重要信息及时确认',
+        '# 项目对比',
+        '皮肤管理|改善肤质与清透度',
+        '轮廓美学|关注自然流畅的面部线条',
+        '抗衰护理|根据状态选择合适的护理方案',
+        '# 温馨提醒',
+        '具体项目、价格和适用情况以到院咨询为准',
+        '请提前准备预约信息和个人健康情况',
+      ].join('\n')
+    }
     return [
       '# 必看重点',
       '位置：江南站附近，交通方便',
@@ -1027,13 +1070,15 @@ interface SettingsResponse {
   customStyleHints: Record<string, string> | null
   customContentTypeHints: Record<string, string> | null
   customProjectTemplates: (ProjectTemplateItem & { contentType: ContentType; styleMode: StyleMode })[] | null
-  storyGenProvider: 'claude_cli' | 'api'
+  storyGenProvider: 'claude_cli' | 'api' | 'ark'
   storyGenApiBaseUrl: string | null
   storyGenApiKey: string | null
   storyGenApiKeySet: boolean
   storyGenApiModel: string | null
   storyGenApiMaxTokens: number
   storyGenCliPath: string | null
+  storyGenPrompt: string | null
+  storyGenTemplate: string
 }
 
 async function loadSettings(): Promise<void> {
@@ -1061,6 +1106,8 @@ async function loadSettings(): Promise<void> {
   storyGenForm.apiBaseUrl = data.storyGenApiBaseUrl ?? ''
   storyGenForm.apiModel = data.storyGenApiModel ?? ''
   storyGenForm.apiMaxTokens = data.storyGenApiMaxTokens ?? 4096
+  storyGenForm.prompt = data.storyGenPrompt ?? ''
+  storyGenForm.template = data.storyGenTemplate ?? 'vertical_short_drama'
   storyGenInfo.apiKeySet = data.storyGenApiKeySet
   storyGenInfo.apiKeyMasked = data.storyGenApiKey ?? ''
 
@@ -1137,7 +1184,9 @@ async function saveSettings(): Promise<void> {
       storyGenCliPath: storyGenForm.cliPath,
       storyGenApiBaseUrl: storyGenForm.apiBaseUrl,
       storyGenApiModel: storyGenForm.apiModel,
-      storyGenApiMaxTokens: storyGenForm.apiMaxTokens
+      storyGenApiMaxTokens: storyGenForm.apiMaxTokens,
+      storyGenPrompt: storyGenForm.prompt,
+      storyGenTemplate: storyGenForm.template
     }
     if (settingsForm.arkApiKey) body.arkApiKey = settingsForm.arkApiKey
     if (settingsForm.minimaxApiKey) body.minimaxApiKey = settingsForm.minimaxApiKey
@@ -2580,13 +2629,14 @@ function jumpToShotEdit(sceneOrder: number, shotOrder: number): void {
 // 这一镜画面，顺手左右切到同一场次的其它镜头对比一下连贯性，看完确认没问题了才需要
 // 跳去编辑模式改文字/重新生成，不是每次点开都得先跳转。所以点缩略图改成打开这个查看器
 // (只存 sceneId/shotId，不存下标，切换场次数据时不会因为下标错位指向错的镜头)，
-// 底部胶片条能直接跳到本场任意一镜，"编辑这一镜"按钮才会真正跳回编辑模式。
+// 底部胶片条能直接跳到项目内任意一镜，"编辑这一镜"按钮才会真正跳回编辑模式。
 const shotViewer = reactive({ open: false, sceneId: '', shotId: '' })
 
-const viewerScene = computed(() => activeProject.value?.scenes.find((s) => s.id === shotViewer.sceneId) ?? null)
-const viewerShots = computed(() => viewerScene.value?.shots ?? [])
-const viewerIndex = computed(() => viewerShots.value.findIndex((s) => s.id === shotViewer.shotId))
-const viewerShot = computed(() => (viewerIndex.value >= 0 ? viewerShots.value[viewerIndex.value] : null))
+const viewerShots = computed(() => overviewShots.value)
+const viewerIndex = computed(() => viewerShots.value.findIndex((entry) => entry.shot.id === shotViewer.shotId))
+const viewerEntry = computed(() => (viewerIndex.value >= 0 ? viewerShots.value[viewerIndex.value] : null))
+const viewerScene = computed(() => viewerEntry.value?.scene ?? null)
+const viewerShot = computed(() => viewerEntry.value?.shot ?? null)
 
 function openShotViewer(sceneId: string, shotId: string): void {
   shotViewer.sceneId = sceneId
@@ -2599,11 +2649,12 @@ function closeShotViewer(): void {
 }
 
 function viewerStep(delta: number): void {
-  const shots = viewerShots.value
-  if (shots.length === 0) return
+  const entries = viewerShots.value
+  if (entries.length === 0) return
   const next = viewerIndex.value + delta
-  if (next < 0 || next >= shots.length) return
-  shotViewer.shotId = shots[next].id
+  if (next < 0 || next >= entries.length) return
+  shotViewer.sceneId = entries[next].scene.id
+  shotViewer.shotId = entries[next].shot.id
 }
 
 function editViewerShot(): void {
@@ -3033,13 +3084,16 @@ function statusLabel(status: string): string {
 
       <template v-if="settingsTab === 'general'">
       <section class="settings-group settings-group-primary">
-      <div class="settings-group-head"><div><h2>火山方舟模型配置</h2><p>配置 Seedream 出图和 Seedance 视频</p></div><span>必填</span></div>
+      <div class="settings-group-head"><div><h2>视频生成模型</h2><p>选择火山方舟或 MiniMax API 生成视频</p></div><span>必填</span></div>
       <!-- 之前每个字段都是 label 独占一行、输入框铺满整个 .settings-group 的宽度——
            这个页面没设宽度上限(见上面 panel-wide 的说明)，宽屏上输入框会被拉得很长，
            内容(一个模型ID/一个URL)用不了那么宽，右边留一大截空白，还要往下滚动才能
            看完全部字段。改成 label+输入框一行(跟图生视频表单同一个思路)，外层再限一个
            阅读宽度，两个问题一起解决：不再有多余留白，5个字段基本一屏就能看完。 -->
       <div class="settings-compact-fields">
+      <div class="settings-group-head settings-subgroup-head">
+        <div><h2>火山方舟通用配置</h2><p>图片、视频和文本模型共用这组 Key</p></div>
+      </div>
       <div class="field settings-field-inline">
         <label>火山方舟 API Key <span class="field-badge">Seedream / Seedance</span></label>
         <div class="settings-field-inline-content">
@@ -3092,6 +3146,49 @@ function statusLabel(status: string): string {
           <p class="field-help">留空则使用「AI生成剧本配置」；填写后优先走 Ark。</p>
         </div>
       </div>
+      <div class="settings-group-divider"></div>
+      <div class="settings-group-head settings-subgroup-head">
+        <div><h2>选择视频服务</h2><p>分镜视频和图生视频使用的服务</p></div><span>可选</span>
+      </div>
+      <div class="field story-gen-provider-field">
+        <label>生成方式</label>
+        <div class="story-gen-provider-tabs" role="tablist" aria-label="视频生成方式">
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: settingsForm.videoProvider === 'seedance' }"
+            role="tab"
+            :aria-selected="settingsForm.videoProvider === 'seedance'"
+            @click="settingsForm.videoProvider = 'seedance'"
+          >
+            <strong>火山方舟</strong>
+            <span>使用 Seedance 视频模型和上面的 Ark API Key</span>
+          </button>
+          <button
+            type="button"
+            class="story-gen-provider-tab"
+            :class="{ active: settingsForm.videoProvider === 'minimax' }"
+            role="tab"
+            :aria-selected="settingsForm.videoProvider === 'minimax'"
+            @click="settingsForm.videoProvider = 'minimax'"
+          >
+            <strong>MiniMax API</strong>
+            <span>使用单独的 H3 视频模型和 MiniMax API Key</span>
+          </button>
+        </div>
+      </div>
+      <template v-if="settingsForm.videoProvider === 'minimax'">
+        <div class="field">
+          <label>MiniMax API Key</label>
+          <input
+            v-model="settingsForm.minimaxApiKey"
+            type="password"
+            :placeholder="settingsInfo.minimaxApiKeySet ? `当前已设置：${settingsInfo.minimaxApiKeyMasked}` : '还没设置'"
+          />
+          <p class="field-help">MiniMax 开放平台 API Key 与火山方舟 Key 不同，不能混用。</p>
+        </div>
+        <p class="hint">H3 当前只支持图生视频，固定 4 秒，比例按输入图自适应。</p>
+      </template>
       </div>
       </section>
       </template>
@@ -3106,62 +3203,12 @@ function statusLabel(status: string): string {
       </div>
       </section>
 
-      <section class="settings-group">
-      <div class="settings-group-head">
-        <div><h2>视频生成 Provider</h2><p>分镜视频和图生视频用哪个模型出</p></div>
-        <span>可选</span>
-      </div>
-      <div class="field story-gen-provider-field">
-        <label>生成方式</label>
-        <div class="story-gen-provider-tabs" role="tablist" aria-label="视频生成方式">
-          <button
-            type="button"
-            class="story-gen-provider-tab"
-            :class="{ active: settingsForm.videoProvider === 'seedance' }"
-            role="tab"
-            :aria-selected="settingsForm.videoProvider === 'seedance'"
-            @click="settingsForm.videoProvider = 'seedance'"
-          >
-            <strong>Seedance（火山方舟）</strong>
-            <span>用上面配置的 Ark API Key</span>
-          </button>
-          <button
-            type="button"
-            class="story-gen-provider-tab"
-            :class="{ active: settingsForm.videoProvider === 'minimax' }"
-            role="tab"
-            :aria-selected="settingsForm.videoProvider === 'minimax'"
-            @click="settingsForm.videoProvider = 'minimax'"
-          >
-            <strong>MiniMax H3</strong>
-            <span>需要单独的 MiniMax API Key</span>
-          </button>
-        </div>
-      </div>
-      <template v-if="settingsForm.videoProvider === 'minimax'">
-        <div class="field">
-          <label>MiniMax API Key</label>
-          <input
-            v-model="settingsForm.minimaxApiKey"
-            type="password"
-            :placeholder="settingsInfo.minimaxApiKeySet ? `当前已设置：${settingsInfo.minimaxApiKeyMasked}` : '还没设置'"
-          />
-          <p class="field-help">
-            MiniMax 开放平台账号的 API Key，跟火山方舟是两个不同的账号体系，不能混用。
-          </p>
-        </div>
-        <p class="hint">
-          MiniMax H3 目前只支持图生视频、固定 4 秒，画面比例由模型按输入图自适应决定，
-          不能像 Seedance 那样精确对齐项目设置的比例。
-        </p>
-      </template>
-      </section>
       </template>
 
       <template v-if="settingsTab === 'story'">
       <section class="settings-group settings-group-primary">
       <div class="settings-group-head">
-        <div><h2>AI生成剧本配置</h2><p>选择本机 Claude 或第三方 API</p></div>
+        <div><h2>AI生成剧本配置</h2><p>选择本机 Claude、火山方舟或第三方 API</p></div>
         <span>必填其一</span>
       </div>
       <div class="field story-gen-provider-field">
@@ -3181,6 +3228,17 @@ function statusLabel(status: string): string {
           <button
             type="button"
             class="story-gen-provider-tab"
+            :class="{ active: storyGenForm.provider === 'ark' }"
+            role="tab"
+            :aria-selected="storyGenForm.provider === 'ark'"
+            @click="storyGenForm.provider = 'ark'"
+          >
+            <strong>火山方舟</strong>
+            <span>使用 Ark 文本模型</span>
+          </button>
+          <button
+            type="button"
+            class="story-gen-provider-tab"
             :class="{ active: storyGenForm.provider === 'api' }"
             role="tab"
             :aria-selected="storyGenForm.provider === 'api'"
@@ -3189,6 +3247,27 @@ function statusLabel(status: string): string {
             <strong>第三方 API</strong>
             <span>不依赖本机终端</span>
           </button>
+        </div>
+      </div>
+
+      <div class="story-gen-content-config">
+        <div class="field">
+          <label>剧本模板</label>
+          <select v-model="storyGenForm.template">
+            <option v-for="option in STORY_TEMPLATE_OPTIONS" :key="option.id" :value="option.id">
+              {{ option.label }} · {{ option.help }}
+            </option>
+          </select>
+          <p class="field-help">模板决定输出结构和写作目标，和下面的自定义提示词分开。</p>
+        </div>
+        <div class="field">
+          <label>剧本提示词 <span class="field-badge">可选</span></label>
+          <textarea
+            v-model="storyGenForm.prompt"
+            rows="3"
+            placeholder="比如：重点突出安心陪同、语言沟通和真实服务细节，不要夸大医疗效果。"
+          />
+          <p class="field-help">只写你希望 AI 额外注意的内容；基础 JSON 格式和镜头字段由模板保证。</p>
         </div>
       </div>
 
@@ -3209,12 +3288,20 @@ function statusLabel(status: string): string {
         </div>
       </template>
 
+      <template v-if="storyGenForm.provider === 'ark'">
+        <div class="story-provider-notice">
+          <strong>使用火山方舟</strong>
+          <span>API Key、Base URL 和文本模型 ID 读取「火山方舟模型配置」，无需重复填写。</span>
+          <span v-if="!settingsInfo.arkApiKeySet || !settingsForm.arkTextModel" class="error">请先在火山方舟模型配置中填写 API Key 和 Ark 文本对话模型 ID。</span>
+        </div>
+      </template>
+
       <div v-if="storyGenForm.provider === 'claude_cli'" class="story-gen-test-block">
         <button class="ghost terminal-test-button" :disabled="storyGenCliTest.testing" @click="testStoryGenCli">
           {{ storyGenCliTest.testing ? '测试中…' : '测试本机终端是否生效' }}
         </button>
         <p v-if="storyGenCliTest.result" :class="['story-gen-test-result', storyGenCliTest.result.ok ? 'ok' : 'error']">
-          {{ storyGenCliTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenCliTest.result.message }}
+          {{ storyGenCliTest.result.ok ? '成功：' : '失败：' }}{{ storyGenCliTest.result.message }}
         </p>
         <p class="field-help">会调用一次本机 <code>claude</code>，用来确认桌面 App 能找到命令。</p>
       </div>
@@ -3246,7 +3333,7 @@ function statusLabel(status: string): string {
             {{ storyGenApiTest.testing ? '测试中…' : '测试连通性' }}
           </button>
           <p v-if="storyGenApiTest.result" :class="['story-gen-test-result', storyGenApiTest.result.ok ? 'ok' : 'error']">
-            {{ storyGenApiTest.result.ok ? '✓ ' : '✗ ' }}{{ storyGenApiTest.result.message }}
+            {{ storyGenApiTest.result.ok ? '成功：' : '失败：' }}{{ storyGenApiTest.result.message }}
           </p>
           <p class="field-help">会用当前表单测试；API Key 留空则沿用已保存的。</p>
         </div>
@@ -3440,7 +3527,7 @@ function statusLabel(status: string): string {
                 :class="{ active: newTemplate === tpl.id }"
                 @click="applyProjectTemplate(tpl.id)"
               >
-                <span class="project-template-check">{{ newTemplate === tpl.id ? '✓' : '' }}</span>
+                <span class="project-template-check" :class="{ selected: newTemplate === tpl.id }" aria-hidden="true"></span>
                 <strong>{{ tpl.label }}</strong>
                 <small>{{ tpl.description }}</small>
               </button>
@@ -3491,22 +3578,35 @@ function statusLabel(status: string): string {
         <ul class="project-list">
           <li v-for="(p, idx) in projects" :key="p.id" @click="editingProjectId === p.id ? undefined : openProject(p.id)">
             <span class="project-index">{{ idx + 1 }}</span>
-            <input
-              v-if="editingProjectId === p.id"
-              :ref="(el) => { if (el) (el as HTMLInputElement).focus() }"
-              v-model="editingProjectTitle"
-              class="project-title-input"
-              @click.stop
-              @keyup.enter="saveProjectTitle(p)"
-              @keyup.esc="cancelEditProjectTitle"
-              @blur="saveProjectTitle(p)"
-            />
-            <strong v-else class="project-title-text">{{ p.title }}</strong>
-            <span class="tag" :class="projectStatusColorClass(p.status)">{{ projectStatusLabel(p.status) }}</span>
-            <span class="tag tag-content-type">{{ contentTypeLabels[p.contentType] }}</span>
-            <span class="tag tag-style-mode">{{ styleModeLabels[p.styleMode] }}</span>
-            <span class="tag tag-style-mode">{{ ratioLabel(p.aspectRatio) }}</span>
-            <span v-if="p.lastExportedAt" class="tag tag-exported">已导出</span>
+            <div class="project-list-main">
+              <input
+                v-if="editingProjectId === p.id"
+                :ref="(el) => { if (el) (el as HTMLInputElement).focus() }"
+                v-model="editingProjectTitle"
+                class="project-title-input"
+                @click.stop
+                @keyup.enter="saveProjectTitle(p)"
+                @keyup.esc="cancelEditProjectTitle"
+                @blur="saveProjectTitle(p)"
+              />
+              <strong v-else class="project-title-text">{{ p.title }}</strong>
+              <div class="project-list-meta">
+                <span class="tag" :class="projectStatusColorClass(p.status)">{{ projectStatusLabel(p.status) }}</span>
+                <span class="tag tag-content-type">{{ contentTypeLabels[p.contentType] }}</span>
+                <span class="tag tag-style-mode">{{ styleModeLabels[p.styleMode] }}</span>
+                <span class="tag tag-style-mode">{{ ratioLabel(p.aspectRatio) }}</span>
+                <span v-if="p.lastExportedAt" class="tag tag-exported">已导出</span>
+                <div class="project-progress" aria-label="项目生成进度">
+                  <span class="project-progress-item">剧本（{{ projectProgress(p).story.done }}/{{ projectProgress(p).story.total }}）</span>
+                  <span class="project-progress-item">场景（{{ projectProgress(p).scenes.done }}/{{ projectProgress(p).scenes.total }}）</span>
+                  <span class="project-progress-item">角色（{{ projectProgress(p).characters.done }}/{{ projectProgress(p).characters.total }}）</span>
+                  <span class="project-progress-item project-progress-shots">
+                    分镜（<Images class="project-progress-icon" aria-hidden="true" />{{ projectProgress(p).shots.imageDone }}/{{ projectProgress(p).shots.total }}
+                    <FileVideo2 class="project-progress-icon" aria-hidden="true" />{{ projectProgress(p).shots.videoDone }}/{{ projectProgress(p).shots.total }}）
+                  </span>
+                </div>
+              </div>
+            </div>
             <div class="project-actions" @click.stop>
               <button
                 v-if="editingProjectId !== p.id"
@@ -3558,7 +3658,7 @@ function statusLabel(status: string): string {
                 :class="{ active: posterForm.templateId === tpl.id }"
                 @click="selectPosterTemplate(tpl)"
               >
-                <span class="project-template-check">{{ posterForm.templateId === tpl.id ? '✓' : '' }}</span>
+                <span class="project-template-check" :class="{ selected: posterForm.templateId === tpl.id }" aria-hidden="true"></span>
                 <strong>{{ tpl.label }}</strong>
                 <span class="ghost danger poster-template-delete" title="删除模版" @click.stop="deletePosterTemplate(tpl.id)">×</span>
               </button>
@@ -3568,7 +3668,7 @@ function statusLabel(status: string): string {
                 :class="{ active: posterForm.templateId === '' }"
                 @click="posterForm.templateId = ''"
               >
-                <span class="project-template-check">{{ posterForm.templateId === '' ? '✓' : '' }}</span>
+                <span class="project-template-check" :class="{ selected: posterForm.templateId === '' }" aria-hidden="true"></span>
                 <strong>自定义</strong>
               </button>
             </div>
@@ -3685,16 +3785,21 @@ function statusLabel(status: string): string {
           <aside class="poster-preview-panel">
             <div class="poster-preview-head"><strong>排版预览</strong><span>{{ posterOrientations.find((o) => o.id === posterForm.orientation)?.label }}</span></div>
             <div class="poster-preview-canvas" :class="`orientation-${posterForm.orientation}`">
-              <div class="poster-preview-bg">AI 背景图</div>
+              <div class="poster-preview-topline">{{ posterForm.templateId ? (posterTemplates.find((t) => t.id === posterForm.templateId)?.label || '海报模板') : '自定义海报' }}</div>
+              <div class="poster-preview-bg"><span>AI 主视觉</span><i></i><b></b></div>
               <div class="poster-preview-copy">
                 <strong>{{ posterForm.title || '海报标题' }}</strong>
                 <span v-if="posterForm.subtitle || effectivePosterLayoutMode === 'title'">{{ posterForm.subtitle || '副标题' }}</span>
-                <ul v-if="effectivePosterLayoutMode === 'textBlocks' || effectivePosterLayoutMode === 'infographic'">
-                  <li v-for="(line, idx) in bodyLinesFromText(posterForm.bodyLinesText).slice(0, 6)" :key="idx">{{ line }}</li>
-                </ul>
               </div>
+              <div v-if="effectivePosterLayoutMode === 'title'" class="poster-preview-callout">主视觉 + 标题层</div>
+              <div v-else class="poster-preview-blocks">
+                <div v-for="(line, idx) in bodyLinesFromText(posterForm.bodyLinesText).slice(0, 6)" :key="idx" class="poster-preview-block">
+                  <b>{{ String(idx + 1).padStart(2, '0') }}</b><span>{{ line || '信息模块' }}</span>
+                </div>
+              </div>
+              <div class="poster-preview-footer">文字由程序排版 · 图片由 AI 生成</div>
             </div>
-            <p>预览仅表达文字层级和占位，实际背景由 AI 生成。</p>
+            <p>先确认标题、主视觉和信息模块的层级；生成后会保留同一套结构。</p>
           </aside>
           </div>
         </div>
@@ -3710,7 +3815,7 @@ function statusLabel(status: string): string {
               <img v-if="poster.url" :src="`${apiBaseUrl}${poster.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(poster.filePath)" />
               <span v-else>{{ poster.status === 'running' ? '生成中…' : statusLabel(poster.status) }}</span>
             </div>
-            <button v-if="poster.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(poster.filePath)">📁 打开目录</button>
+            <button v-if="poster.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(poster.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag tag-style-mode">{{ poster.templateLabel || '自定义' }}</span>
@@ -3846,7 +3951,7 @@ function statusLabel(status: string): string {
               <video v-if="item.url" controls :src="`${apiBaseUrl}${item.url}`" @dblclick="openInSystemViewer(item.filePath)" />
               <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
             </div>
-            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)">📁 打开目录</button>
+            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag" :class="statusColorClass(item.status)">{{ statusLabel(item.status) }}</span>
@@ -4003,7 +4108,7 @@ function statusLabel(status: string): string {
               <img v-if="item.url" :src="`${apiBaseUrl}${item.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(item.filePath)" />
               <span v-else>{{ item.status === 'running' ? '生成中…' : statusLabel(item.status) }}</span>
             </div>
-            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)">📁 打开目录</button>
+            <button v-if="item.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(item.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
             <div class="poster-card-info">
               <div class="poster-card-title-row">
                 <span class="tag tag-style-mode">{{ styleModeLabels[item.styleMode] }}</span>
@@ -4113,6 +4218,34 @@ function statusLabel(status: string): string {
       </div>
 
       <template v-if="projectViewMode === 'overview'">
+        <section v-if="activeProject.scenes.length > 0" class="overview-section overview-scenes-section">
+          <div class="overview-section-head">
+            <div>
+              <h3>场景参考图</h3>
+              <p class="overview-subhead">每个场景一张，横向查看环境、光线和色调是否统一</p>
+            </div>
+            <button class="ghost" @click="jumpToSceneEdit(0)">管理场景图</button>
+          </div>
+          <div class="overview-scene-ref-row">
+            <article
+              v-for="(scene, sceneIndex) in activeProject.scenes"
+              :key="scene.id"
+              class="overview-scene-ref-card"
+            >
+              <button type="button" class="overview-scene-ref-main" @click="jumpToSceneEdit(sceneIndex)">
+                <span class="overview-scene-ref-media" :class="statusColorClass(scene.status)">
+                  <img v-if="scene.url" :src="`${apiBaseUrl}${scene.url}`" />
+                  <i v-else>{{ scene.status === 'running' ? '生成中' : '暂无' }}</i>
+                  <span class="overview-ref-dot" :class="statusColorClass(scene.status)"></span>
+                </span>
+                <span class="overview-scene-ref-label">第{{ scene.order + 1 }}场</span>
+                <span class="overview-scene-ref-summary">{{ scene.summary || '未填写场景描述' }}</span>
+              </button>
+              <button type="button" class="ghost overview-scene-action" @click="jumpToSceneEdit(sceneIndex)">场景</button>
+            </article>
+          </div>
+        </section>
+
         <section class="overview-section">
           <div class="overview-section-head">
             <h3>角色</h3>
@@ -4172,7 +4305,7 @@ function statusLabel(status: string): string {
 
           <div v-if="overviewShots.length > 0" class="overview-all-shot-grid">
             <article
-              v-for="{ scene, sceneIndex, shot } in overviewShots"
+              v-for="{ scene, shot } in overviewShots"
               :key="shot.id"
               class="overview-shot-card overview-shot-card-full"
             >
@@ -4186,7 +4319,7 @@ function statusLabel(status: string): string {
                   <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" />
                   <i v-else class="overview-shot-placeholder">{{ assetOf(shot.id, 'image')?.status === 'running' ? '生成中…' : '暂无画面' }}</i>
                   <span class="overview-shot-dot" :class="statusColorClass(assetOf(shot.id, 'image')?.status)"></span>
-                  <span v-if="assetOf(shot.id, 'video')?.status === 'completed'" class="overview-shot-video-badge">▶</span>
+                  <span v-if="assetOf(shot.id, 'video')?.status === 'completed'" class="overview-shot-video-badge"><Play class="button-icon" aria-hidden="true" /></span>
                 </span>
               </button>
               <div class="overview-shot-info">
@@ -4203,7 +4336,6 @@ function statusLabel(status: string): string {
                   {{ assetOf(shot.id, 'image')?.status === 'completed' ? '重新生成图片' : '生成图片' }}
                 </button>
                 <button type="button" class="ghost" @click="jumpToShotEdit(scene.order + 1, shot.order + 1)">编辑</button>
-                <button type="button" class="ghost" @click="jumpToSceneEdit(sceneIndex)">场景</button>
               </div>
             </article>
           </div>
@@ -4227,7 +4359,7 @@ function statusLabel(status: string): string {
           <div class="shot-viewer-panel">
             <div class="shot-viewer-head">
               <span>第{{ (viewerScene?.order ?? 0) + 1 }}场 · {{ viewerScene?.summary }}</span>
-              <button type="button" class="ghost" @click="closeShotViewer">✕ 关闭</button>
+              <button type="button" class="ghost" @click="closeShotViewer">关闭</button>
             </div>
             <div class="shot-viewer-body">
               <button type="button" class="shot-viewer-nav" :disabled="viewerIndex <= 0" @click="viewerStep(-1)">←</button>
@@ -4240,28 +4372,29 @@ function statusLabel(status: string): string {
               <button type="button" class="shot-viewer-nav" :disabled="viewerIndex >= viewerShots.length - 1" @click="viewerStep(1)">→</button>
             </div>
             <div class="shot-viewer-meta">
-              <span>第{{ (viewerShot?.order ?? 0) + 1 }}镜（{{ viewerIndex + 1 }}/{{ viewerShots.length }}）· 用←→键切换</span>
+              <span>第{{ (viewerScene?.order ?? 0) + 1 }}场 · 第{{ (viewerShot?.order ?? 0) + 1 }}镜（{{ viewerIndex + 1 }}/{{ viewerShots.length }}）· 用←→键切换</span>
               <div class="shot-viewer-meta-actions">
                 <button
                   v-if="assetOf(viewerShot?.id ?? '', 'image')?.filePath"
                   type="button"
                   class="open-folder-btn"
                   @click="openContainingFolder(assetOf(viewerShot?.id ?? '', 'image')?.filePath)"
-                >📁 打开目录</button>
+                ><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                 <button type="button" class="ghost" @click="editViewerShot">编辑这一镜</button>
               </div>
             </div>
             <div class="shot-viewer-filmstrip">
               <button
-                v-for="shot in viewerShots"
-                :key="shot.id"
+                v-for="entry in viewerShots"
+                :key="entry.shot.id"
                 type="button"
                 class="shot-viewer-thumb"
-                :class="{ active: shot.id === shotViewer.shotId }"
-                @click="shotViewer.shotId = shot.id"
+                :class="{ active: entry.shot.id === shotViewer.shotId }"
+                :title="`第${entry.scene.order + 1}场 · 第${entry.shot.order + 1}镜`"
+                @click="shotViewer.sceneId = entry.scene.id; shotViewer.shotId = entry.shot.id"
               >
-                <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" />
-                <i v-else class="overview-ref-placeholder">{{ shot.order + 1 }}</i>
+                <img v-if="assetOf(entry.shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(entry.shot.id, 'image')?.url}`" />
+                <i v-else class="overview-ref-placeholder">{{ entry.scene.order + 1 }}-{{ entry.shot.order + 1 }}</i>
               </button>
             </div>
           </div>
@@ -4440,7 +4573,7 @@ function statusLabel(status: string): string {
               <span class="tag" :class="statusColorClass(c.status)">{{ statusLabel(c.status) }}</span>
             </div>
             <img v-if="c.url" :src="`${apiBaseUrl}${c.url}`" title="双击用系统程序打开原图" @dblclick="openInSystemViewer(c.refImagePath)" />
-            <button v-if="c.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(c.refImagePath)">📁 打开目录</button>
+            <button v-if="c.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(c.refImagePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
             <p v-if="modelLabel(c.providerId, c.model)" class="hint model-tag">{{ modelLabel(c.providerId, c.model) }}</p>
             <p v-if="c.error" class="error">{{ c.error }}</p>
             <label class="character-prompt-label">外观描述/提示词</label>
@@ -4620,7 +4753,7 @@ function statusLabel(status: string): string {
                       {{ scene.status === 'running' ? '生成中…' : '暂无场景图' }}
                     </div>
                     <span class="scene-ref-media-tag">生成图</span>
-                    <button v-if="scene.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(scene.refImagePath)">📁 打开目录</button>
+                    <button v-if="scene.refImagePath" type="button" class="open-folder-btn" @click="openContainingFolder(scene.refImagePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                   </div>
                   <div class="scene-ref-preview scene-ref-upload-preview">
                     <img
@@ -4818,7 +4951,7 @@ function statusLabel(status: string): string {
                             <img v-if="assetOf(shot.id, 'image')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'image')?.url}`" @dblclick="openInSystemViewer(assetOf(shot.id, 'image')?.filePath)" />
                             <span v-else>{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
                           </div>
-                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                         <div class="media-correspondence">当前分镜图片 <span>↓</span> 作为视频默认起始帧</div>
                         <div class="shot-media-card">
@@ -4827,13 +4960,13 @@ function statusLabel(status: string): string {
                             <video v-if="assetOf(shot.id, 'video')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'video')?.url}`" controls @dblclick="openInSystemViewer(assetOf(shot.id, 'video')?.filePath)" />
                             <span v-else>{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
                           </div>
-                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                         <div class="shot-media-card shot-media-card-audio">
                           <div class="shot-media-card-title"><span>镜头语音</span><span :class="statusColorClass(assetOf(shot.id, 'voice')?.status)">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span></div>
                           <audio v-if="assetOf(shot.id, 'voice')?.url" :src="`${apiBaseUrl}${assetOf(shot.id, 'voice')?.url}`" controls @dblclick="openInSystemViewer(assetOf(shot.id, 'voice')?.filePath)" />
                           <span v-else class="hint">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
-                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                       </aside>
                       <div class="shot-settings-pane">
@@ -4989,7 +5122,7 @@ function statusLabel(status: string): string {
                             <span v-else-if="assetOf(shot.id, 'image')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
                             <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'image')?.status ?? 'pending') }}</span>
                           </div>
-                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'image')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'image')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <label>画面描述</label>
@@ -5045,7 +5178,7 @@ function statusLabel(status: string): string {
                             <span v-else-if="assetOf(shot.id, 'video')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
                             <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'video')?.status ?? 'pending') }}</span>
                           </div>
-                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'video')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'video')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <label>运镜/动态描述</label>
@@ -5086,7 +5219,7 @@ function statusLabel(status: string): string {
                             <span v-else-if="assetOf(shot.id, 'voice')?.status === 'running'" class="skeleton-pulse pair-media-skeleton"></span>
                             <span v-else class="pair-media-empty">{{ statusLabel(assetOf(shot.id, 'voice')?.status ?? 'pending') }}</span>
                           </div>
-                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)">📁 打开目录</button>
+                          <button v-if="assetOf(shot.id, 'voice')?.filePath" type="button" class="open-folder-btn" @click="openContainingFolder(assetOf(shot.id, 'voice')?.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /> 打开目录</button>
                         </div>
                         <div class="pair-text">
                           <div class="pair-text-label-row">
@@ -5157,7 +5290,7 @@ function statusLabel(status: string): string {
                                   <div v-else class="candidate-placeholder">{{ statusLabel(c.status) }}</div>
                                   <span v-if="c.selected" class="tag">已选用</span>
                                   <p v-if="c.error" class="error">{{ c.error }}</p>
-                                  <button v-if="c.filePath" type="button" class="open-folder-btn" @click.stop="openContainingFolder(c.filePath)">📁</button>
+                                  <button v-if="c.filePath" type="button" class="open-folder-btn" @click.stop="openContainingFolder(c.filePath)"><FolderOpen class="button-icon" aria-hidden="true" /></button>
                                 </div>
                               </div>
                             </div>
@@ -5382,6 +5515,17 @@ body {
 .settings-field-inline { flex-direction: row; align-items: baseline; gap: 14px; }
 .settings-field-inline > label { flex-shrink: 0; width: 168px; padding-top: 7px; }
 .settings-field-inline > .settings-field-inline-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.settings-group-divider { height: 1px; margin: 18px 0 14px; background: #e4e4e7; }
+.settings-subgroup-head { margin-bottom: 10px; }
+.settings-subgroup-head h2 { margin-top: 0; }
+.story-gen-content-config {
+  display: grid; grid-template-columns: minmax(220px, .7fr) minmax(300px, 1.3fr); gap: 14px;
+  margin: 16px 0; padding: 14px; border: 1px solid #e4e4e7; border-radius: 10px; background: #fafafa;
+}
+.story-provider-notice {
+  display: flex; flex-direction: column; gap: 4px; margin: 12px 0; padding: 11px 13px;
+  border: 1px solid #bfdbfe; border-radius: 9px; background: #eff6ff; color: #374151; font-size: 12px;
+}
 .model-ref-hint { line-height: 1.6; }
 .model-ref-hint code {
   font-family: ui-monospace, monospace; font-size: 11px; color: #3f6212; background: #f0fdf4;
@@ -5396,7 +5540,7 @@ body {
 .settings-state, .field-badge { font-size: 10px; }
 .field-help { margin: 0; font-size: 11px; color: #8a8a90; }
 .settings-doc summary { cursor: pointer; }
-.story-gen-provider-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.story-gen-provider-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .story-gen-provider-tab {
   min-height: 78px; text-align: left; white-space: normal;
   display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px;
@@ -5473,6 +5617,7 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
   cursor: pointer; margin-top: 4px; font-family: inherit;
 }
 .open-folder-btn:hover { background: #f4f4f5; }
+.button-icon { width: 14px; height: 14px; flex: 0 0 auto; vertical-align: -2px; }
 
 .step-bar {
   display: flex; gap: 8px; margin-bottom: 20px; padding: 10px; background: #fafafa;
@@ -5522,11 +5667,17 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 .project-list li:hover { background: #fafafa; }
 .project-list li .tag { margin-left: 0; }
 .project-index { flex-shrink: 0; min-width: 18px; text-align: right; color: #a1a1aa; font-size: 12px; font-variant-numeric: tabular-nums; }
+.project-list-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; }
 .project-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-title-input {
   flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid #18181b; border-radius: 6px;
   font-size: 14px; font-weight: 600; color: #18181b; background: white;
 }
+.project-list-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.project-progress { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-left: 3px; color: #52525b; font-size: 11px; }
+.project-progress-item { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
+.project-progress-shots { gap: 3px; }
+.project-progress-icon { width: 13px; height: 13px; flex: 0 0 auto; color: #71717a; }
 .project-title-edit { flex-shrink: 0; }
 .project-delete { margin-left: auto; flex-shrink: 0; }
 .project-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
@@ -5772,6 +5923,31 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 .overview-ref-placeholder { font-style: normal; font-size: 12px; color: #a1a1aa; }
 .overview-ref-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; }
 .overview-ref-label { font-size: 11px; color: #52525b; text-align: center; }
+.overview-scene-ref-row {
+  display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px;
+  scrollbar-width: thin;
+}
+.overview-scene-ref-card {
+  display: flex; flex-direction: column; align-items: stretch; gap: 5px; flex: 0 0 156px; min-width: 156px;
+  padding: 7px; border: 1px solid #e4e4e7; border-radius: 10px; background: white; text-align: left;
+}
+.overview-scene-ref-main {
+  display: flex; flex-direction: column; align-items: stretch; gap: 5px; width: 100%; padding: 0;
+  border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit;
+}
+.overview-scene-ref-main:hover .overview-scene-ref-label { color: #2563eb; }
+.overview-scene-action { align-self: flex-start; min-height: 26px; padding: 4px 8px; font-size: 11px; }
+.overview-scene-ref-card:hover { border-color: #a1a1aa; }
+.overview-scene-ref-media {
+  position: relative; display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16 / 10;
+  overflow: hidden; border-radius: 7px; background: #f4f4f5; color: #a1a1aa; font-size: 11px;
+}
+.overview-scene-ref-media img { width: 100%; height: 100%; object-fit: cover; }
+.overview-scene-ref-media i { font-style: normal; }
+.overview-scene-ref-label { color: #27272a; font-size: 12px; font-weight: 700; }
+.overview-scene-ref-summary {
+  overflow: hidden; color: #71717a; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap;
+}
 .overview-shot-media {
   position: relative; height: 84px; border-radius: 10px; background: #f4f4f5; border: 1px solid #e4e4e7;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
@@ -5795,7 +5971,7 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
   -webkit-line-clamp: 2; color: #52525b; font-size: 12px; line-height: 1.5;
 }
 .overview-shot-actions {
-  display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center;
+  display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center;
 }
 .overview-shot-actions button { min-height: 30px; padding: 5px 8px; font-size: 12px; }
 .overview-cta-bar {
@@ -5846,7 +6022,7 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 }
 
 /* 分镜大图查看器：点缩略图打开的全屏浮层，中间大图 + 左右切换箭头 + 底部胶片条，
-   胶片条只列这一场戏的镜头，配合←→键翻页，方便集中比较同一场戏画面是否连贯。 */
+   胶片条列出全部场次镜头，跨场次连续翻页，方便从第一镜一路检查到最后一镜。 */
 .shot-viewer-overlay {
   position: fixed; inset: 0; background: rgba(24, 24, 27, 0.72); z-index: 200;
   display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -6305,7 +6481,7 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
   overflow: hidden; border: 1px solid #e4e4e7; border-radius: 12px; background: white;
 }
 .ui-v2 .project-list li {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto auto; gap: 7px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px;
   min-height: 52px; margin: 0; padding: 10px 13px; border: 0; border-bottom: 1px solid #e4e4e7; border-radius: 0;
 }
 .ui-v2 .project-delete { margin-left: 0; }
@@ -6314,6 +6490,9 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 .ui-v2 .project-list li strong {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px;
 }
+.ui-v2 .project-list-main { gap: 6px; }
+.ui-v2 .project-list-meta { gap: 5px; }
+.ui-v2 .project-progress { color: var(--ui-muted); }
 .ui-v2 .project-title-input { font-size: 13px; }
 .ui-v2 .project-list li .tag { margin-left: 0; white-space: nowrap; }
 .ui-v2 .posters-page { max-width: 1180px; }
@@ -6392,11 +6571,20 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 .ui-v2 .poster-preview-head span { font-size: 11px; color: #71717a; }
 .ui-v2 .poster-preview-canvas { position: relative; width: 100%; aspect-ratio: 3 / 4; overflow: hidden; border-radius: 9px; background: #d8dde4; }
 .ui-v2 .poster-preview-canvas.orientation-landscape { aspect-ratio: 4 / 3; }
-.ui-v2 .poster-preview-bg { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255,255,255,.75); font-size: 11px; letter-spacing: .08em; }
-.ui-v2 .poster-preview-copy { position: absolute; inset: auto 14px 16px; display: flex; flex-direction: column; gap: 5px; color: white; text-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.ui-v2 .poster-preview-topline { position: absolute; z-index: 2; top: 10px; left: 12px; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,.92); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.ui-v2 .poster-preview-bg { position: absolute; inset: 0 0 45%; display: grid; place-items: center; overflow: hidden; color: rgba(255,255,255,.82); font-size: 11px; letter-spacing: .08em; background: linear-gradient(135deg, #64748b, #0f766e 55%, #f59e0b); }
+.ui-v2 .poster-preview-bg i, .ui-v2 .poster-preview-bg b { position: absolute; display: block; border-radius: 50%; background: rgba(255,255,255,.18); }
+.ui-v2 .poster-preview-bg i { width: 74%; aspect-ratio: 1; right: -28%; top: -28%; }
+.ui-v2 .poster-preview-bg b { width: 42%; aspect-ratio: 1; left: -14%; bottom: -24%; }
+.ui-v2 .poster-preview-copy { position: absolute; z-index: 2; inset: 42% 14px auto; display: flex; flex-direction: column; gap: 5px; color: #111827; }
 .ui-v2 .poster-preview-copy strong { font-size: 20px; line-height: 1.2; }
-.ui-v2 .poster-preview-copy span { font-size: 11px; }
-.ui-v2 .poster-preview-copy ul { margin: 5px 0 0; padding-left: 17px; font-size: 10px; }
+.ui-v2 .poster-preview-copy span { font-size: 11px; color: #4b5563; }
+.ui-v2 .poster-preview-callout { position: absolute; z-index: 2; left: 14px; right: 14px; top: 58%; padding: 8px; border: 1px solid #fed7aa; border-radius: 7px; background: #fff7ed; color: #c2410c; font-size: 10px; font-weight: 700; text-align: center; }
+.ui-v2 .poster-preview-blocks { position: absolute; z-index: 2; top: 57%; left: 12px; right: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.ui-v2 .poster-preview-block { min-width: 0; min-height: 35px; padding: 6px; overflow: hidden; border: 1px solid #d1d5db; border-radius: 6px; background: rgba(255,255,255,.92); color: #374151; font-size: 9px; line-height: 1.25; }
+.ui-v2 .poster-preview-block b { display: block; margin-bottom: 2px; color: #ea580c; font-size: 9px; }
+.ui-v2 .poster-preview-block span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.ui-v2 .poster-preview-footer { position: absolute; z-index: 2; right: 12px; bottom: 9px; left: 12px; padding-top: 5px; border-top: 1px solid #d1d5db; color: #6b7280; font-size: 8px; text-align: center; }
 .ui-v2 .poster-preview-panel > p { margin: 10px 0 0; color: #8a8a90; font-size: 11px; line-height: 1.5; }
 .ui-v2 .text-images-page { max-width: 1240px; }
 .ui-v2 .text-image-form-card .field { margin-bottom: 16px; gap: 7px; }
@@ -6537,6 +6725,7 @@ button:disabled { opacity: 1; cursor: not-allowed; color: #a1a1aa; border-color:
 }
 @media (max-width: 720px) {
   .ui-v2 .custom-template-row { grid-template-columns: 1fr; }
+  .ui-v2 .story-gen-content-config { grid-template-columns: 1fr; }
 }
 .ui-v2 .settings-doc {
   padding: 7px 9px; border: 1px solid #e4e4e7; border-radius: 8px; background: #f7f7f9;

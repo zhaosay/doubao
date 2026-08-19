@@ -89,6 +89,11 @@ def optimize_prompt(body: OptimizePromptBody):
 
     provider_config = _build_story_provider_config(settings)
     provider = provider_config.get("provider")
+    if provider == "ark" and not (provider_config.get("arkApiKey") and provider_config.get("arkModel")):
+        raise HTTPException(
+            400,
+            "已选择火山方舟生成剧本，但 Ark API Key 或文本模型未配置完整，请先去「火山方舟模型配置」填写。",
+        )
     if provider == "api" and not (provider_config.get("baseUrl") and provider_config.get("apiKey") and provider_config.get("model")):
         raise HTTPException(
             400,

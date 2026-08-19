@@ -13,7 +13,7 @@ from app.services.story_generator import detect_claude_cli, test_anthropic_api, 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
-StoryGenProvider = Literal["claude_cli", "api"]
+StoryGenProvider = Literal["claude_cli", "api", "ark"]
 VideoGenProvider = Literal["seedance", "minimax"]
 
 # 跟 story_generator.py 的 STYLE_HINTS/CONTENT_TYPE_HINTS、seedream.py 的 STYLE_PREFIXES
@@ -65,6 +65,9 @@ class UpdateSettingsBody(BaseModel):
     storyGenApiKey: Optional[str] = None
     storyGenApiModel: Optional[str] = None
     storyGenApiMaxTokens: Optional[int] = None
+    # Ark 剧本使用通用方舟配置里的 API Key + 文本模型；这两个字段只负责剧本内容本身。
+    storyGenPrompt: Optional[str] = None
+    storyGenTemplate: Optional[str] = None
     # claude_cli 模式下的手动覆盖路径：留空(None 或空字符串) = 走自动检测(PATH 查找+
     # Windows 常见安装目录扫描+npm 全局 prefix 动态查询)；填了就只认这一个路径，
     # 给"自动检测都找不到/找到的是错的"这种情况一个逃生舱口，不用等我们再加新的
@@ -259,6 +262,8 @@ def read_settings():
         "storyGenApiModel": s.get("storyGenApiModel"),
         "storyGenApiMaxTokens": s.get("storyGenApiMaxTokens", 4096),
         "storyGenCliPath": s.get("storyGenCliPath"),
+        "storyGenPrompt": s.get("storyGenPrompt"),
+        "storyGenTemplate": s.get("storyGenTemplate", "vertical_short_drama"),
         "videoProvider": s.get("videoProvider") or "seedance",
         "minimaxApiKey": _mask(s.get("minimaxApiKey")),
         "minimaxApiKeySet": bool(s.get("minimaxApiKey")),
@@ -347,6 +352,12 @@ def update_settings(body: UpdateSettingsBody):
             if body.storyGenApiMaxTokens is not None
             else current.get("storyGenApiMaxTokens", 4096)
         )
+        story_gen_prompt = body.storyGenPrompt if body.storyGenPrompt is not None else current.get("storyGenPrompt")
+        story_gen_template = (
+            body.storyGenTemplate.strip()
+            if body.storyGenTemplate is not None and body.storyGenTemplate.strip()
+            else current.get("storyGenTemplate", "vertical_short_drama")
+        )
         # 切到"第三方 API"就必须把三个字段都填完整，不然存进去一个"选了 api 但没配置全"
         # 的半吊子状态，等到真正生成剧本那一刻才报错，体验比现在保存时就拦下来更差。
         if story_gen_provider == "api":
@@ -361,6 +372,9 @@ def update_settings(body: UpdateSettingsBody):
             ]
             if missing:
                 raise HTTPException(400, f"选了第三方 API 生成剧本，还差这些没填：{'、'.join(missing)}")
+        elif story_gen_provider == "ark":
+            if not (ark_api_key or "").strip() or not (ark_text_model or "").strip():
+                raise HTTPException(400, "选了火山方舟生成剧本，还差方舟 API Key 或 Ark 文本模型 ID")
 
         def _resolve_json_field(body_value: Optional[str], column: str, validator) -> Optional[str]:
             if body_value is None:
@@ -395,8 +409,8 @@ def update_settings(body: UpdateSettingsBody):
                 "exportBgmVolume, exportUseBgm, "
                 "customStylePrefixes, customStyleHints, customContentTypeHints, customProjectTemplates, "
                 "posterFontPath, storyGenProvider, storyGenApiBaseUrl, storyGenApiKey, storyGenApiModel, "
-                "storyGenApiMaxTokens, storyGenCliPath, videoProvider, minimaxApiKey, updatedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "storyGenApiMaxTokens, storyGenCliPath, storyGenPrompt, storyGenTemplate, videoProvider, minimaxApiKey, updatedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "singleton",
                     ark_api_key,
@@ -422,6 +436,8 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_model,
                     story_gen_api_max_tokens,
                     story_gen_cli_path,
+                    story_gen_prompt,
+                    story_gen_template,
                     video_provider,
                     minimax_api_key,
                     now,
@@ -436,7 +452,7 @@ def update_settings(body: UpdateSettingsBody):
                 "customStylePrefixes = ?, customStyleHints = ?, customContentTypeHints = ?, "
                 "customProjectTemplates = ?, posterFontPath = ?, storyGenProvider = ?, "
                 'storyGenApiBaseUrl = ?, storyGenApiKey = ?, storyGenApiModel = ?, storyGenApiMaxTokens = ?, '
-                'storyGenCliPath = ?, videoProvider = ?, minimaxApiKey = ?, updatedAt = ? WHERE id = ?',
+                'storyGenCliPath = ?, storyGenPrompt = ?, storyGenTemplate = ?, videoProvider = ?, minimaxApiKey = ?, updatedAt = ? WHERE id = ?',
                 (
                     ark_api_key,
                     ark_base_url,
@@ -461,6 +477,8 @@ def update_settings(body: UpdateSettingsBody):
                     story_gen_api_model,
                     story_gen_api_max_tokens,
                     story_gen_cli_path,
+                    story_gen_prompt,
+                    story_gen_template,
                     video_provider,
                     minimax_api_key,
                     now,

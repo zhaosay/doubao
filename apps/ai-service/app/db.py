@@ -67,6 +67,8 @@ def get_settings(conn: sqlite3.Connection) -> dict:
             "storyGenApiModel": None,
             "storyGenApiMaxTokens": 4096,
             "storyGenCliPath": None,
+            "storyGenPrompt": None,
+            "storyGenTemplate": "vertical_short_drama",
             "videoProvider": "seedance",
             "minimaxApiKey": None,
         }
@@ -85,6 +87,8 @@ def get_settings(conn: sqlite3.Connection) -> dict:
         d["videoProvider"] = "seedance"
     if d.get("storyGenApiMaxTokens") is None:
         d["storyGenApiMaxTokens"] = 4096
+    if not d.get("storyGenTemplate"):
+        d["storyGenTemplate"] = "vertical_short_drama"
     for key in _JSON_SETTING_KEYS:
         raw = d.get(key)
         if raw:
@@ -191,6 +195,15 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
         # (claude_cli/api)，见 routers/prompts.py。
         conn.execute('ALTER TABLE "Setting" ADD COLUMN "arkTextModel" TEXT')
         conn.commit()
+
+    if "storyGenPrompt" not in setting_cols:
+        conn.execute('ALTER TABLE "Setting" ADD COLUMN "storyGenPrompt" TEXT')
+        conn.commit()
+    if "storyGenTemplate" not in setting_cols:
+        conn.execute(
+            'ALTER TABLE "Setting" ADD COLUMN "storyGenTemplate" TEXT NOT NULL DEFAULT \'vertical_short_drama\''
+        )
+        conn.commit()
     if "videoProvider" not in setting_cols:
         # 视频生成走哪个 provider：seedance(默认，火山方舟) | minimax(MiniMax H3)，
         # 全局唯一一份设置，见 app/providers/minimax.py、app/providers/seedance.py。
@@ -296,6 +309,30 @@ def _ensure_startup_migrations(conn: sqlite3.Connection) -> None:
             "医美/医疗科普知识主视觉，专业权威、清晰易懂的视觉风格，画面简洁大方，适合承载"
             "科普类图文内容，色调清新明亮。",
             "title",
+        ),
+        (
+            "poster-tpl-hospital-kv", "医院主视觉海报",
+            "韩国高端医美医院品牌主视觉，干净明亮的现代医疗空间、自然精致的东亚女性、柔和自然光、浅米灰低饱和背景，"
+            "画面留出清晰标题区和人物/环境主视觉区，适合后期叠加中文品牌文案，不要生成任何文字或 logo。",
+            "title",
+        ),
+        (
+            "poster-tpl-hospital-service", "医院服务流程图",
+            "韩国医美医院服务流程信息图背景，预约、到院、翻译沟通、咨询、术后关怀等服务场景，以人物和医疗空间作为视觉元素，"
+            "浅色纸张质感、清晰分区、编号节点、柔和蓝绿橙色点缀，适合后期叠加中文步骤说明，不要生成任何文字。",
+            "infographic",
+        ),
+        (
+            "poster-tpl-hospital-compare", "医美项目对比图",
+            "医美项目选择对比信息图背景，三个或四个并列卡片区域，东亚女性自然面部、皮肤管理、轮廓美学和抗衰护理等视觉元素，"
+            "低饱和医疗高级感，卡片边界清楚，适合后期叠加项目特点、适合人群和注意事项，不要生成任何文字。",
+            "infographic",
+        ),
+        (
+            "poster-tpl-hospital-price", "医院项目价格信息图",
+            "韩国医美医院项目价格信息图背景，整洁明亮的医院环境、局部人物与护理场景，顶部主视觉加下方多张价格卡片，"
+            "专业可信、留白充足、层级清晰，适合后期叠加项目名称和价格，不要生成任何文字、数字或 logo。",
+            "infographic",
         ),
         (
             "poster-tpl-price", "价格表海报",

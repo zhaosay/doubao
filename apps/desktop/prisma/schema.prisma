@@ -313,7 +313,8 @@ model Setting {
   // 生成海报时报清晰的错误，提示来这里手动填。
   posterFontPath String?
 
-  // 剧本生成方式：claude_cli(默认，调本机装好的 Claude Code CLI，免费但要求本机能跑
+  // 剧本生成方式：claude_cli(默认) | api(第三方 Anthropic 兼容服务) | ark(火山方舟)
+  // claude_cli 调本机装好的 Claude Code CLI，免费但要求本机能跑
   // 起来这个命令，Windows 上常见问题是压根没装/没登录) | api(改成直连一个 Anthropic
   // Messages API 兼容的第三方中转/代理服务，填 Base URL + API Key + 模型名，不依赖
   // 本机终端环境，Windows 上更稳)。默认值保持 claude_cli，不影响已经在用这个功能、
@@ -332,6 +333,9 @@ model Setting {
   // 目录扫描 + npm 全局 prefix 动态查询 + 僵尸 shim 识别)；填了就只认这一个路径，
   // 给"自动检测都找不到/找到的是错的"这种情况一个逃生舱口。
   storyGenCliPath String?
+  // 剧本的创作提示词和输出模板分开保存；模板只是选择结构，不会覆盖用户提示词。
+  storyGenPrompt String?
+  storyGenTemplate String @default("vertical_short_drama")
 
   updatedAt       DateTime @updatedAt
 }

@@ -105,13 +105,65 @@ def create_project(body: CreateProjectBody):
     }
 
 
+def _project_progress(conn, project_id: str) -> dict:
+    """返回项目列表需要的轻量进度，不加载剧本正文和镜头文本。"""
+    story = conn.execute(
+        'SELECT id, status FROM "Story" WHERE projectId = ?', (project_id,)
+    ).fetchone()
+    story_id = story["id"] if story else None
+
+    scene_counts = {"done": 0, "total": 0}
+    character_counts = {"done": 0, "total": 0}
+    shot_counts = {"total": 0, "imageDone": 0, "videoDone": 0}
+    if story_id:
+        scene_row = conn.execute(
+            'SELECT COUNT(*) AS total, '
+            'COALESCE(SUM(CASE WHEN status = \'completed\' THEN 1 ELSE 0 END), 0) AS done '
+            'FROM "Scene" WHERE storyId = ?',
+            (story_id,),
+        ).fetchone()
+        scene_counts = {"done": scene_row["done"], "total": scene_row["total"]}
+
+        character_row = conn.execute(
+            'SELECT COUNT(*) AS total, '
+            'COALESCE(SUM(CASE WHEN status = \'completed\' THEN 1 ELSE 0 END), 0) AS done '
+            'FROM "Character" WHERE storyId = ?',
+            (story_id,),
+        ).fetchone()
+        character_counts = {"done": character_row["done"], "total": character_row["total"]}
+
+        shot_row = conn.execute(
+            'SELECT COUNT(*) AS total, '
+            'COUNT(DISTINCT CASE WHEN EXISTS ('
+            'SELECT 1 FROM "Asset" a WHERE a.shotId = s.id AND a.type = \'image\' '
+            'AND a.status = \'completed\') THEN s.id END) AS imageDone, '
+            'COUNT(DISTINCT CASE WHEN EXISTS ('
+            'SELECT 1 FROM "Asset" a WHERE a.shotId = s.id AND a.type = \'video\' '
+            'AND a.status = \'completed\') THEN s.id END) AS videoDone '
+            'FROM "Shot" s JOIN "Scene" sc ON sc.id = s.sceneId WHERE sc.storyId = ?',
+            (story_id,),
+        ).fetchone()
+        shot_counts = {
+            "total": shot_row["total"],
+            "imageDone": shot_row["imageDone"],
+            "videoDone": shot_row["videoDone"],
+        }
+
+    return {
+        "story": {"done": int(bool(story and story["status"] == "completed")), "total": 1 if story else 0},
+        "scenes": scene_counts,
+        "characters": character_counts,
+        "shots": shot_counts,
+    }
+
+
 @router.get("")
 def list_projects():
     with get_connection() as conn:
         rows = conn.execute(
             f'SELECT {_PROJECT_LIST_COLUMNS} FROM "Project" ORDER BY createdAt DESC'
         ).fetchall()
-    return [dict(r) for r in rows]
+        return [{**dict(row), "progress": _project_progress(conn, row["id"])} for row in rows]
 
 
 @router.patch("/{project_id}")
@@ -241,6 +293,11 @@ def _build_story_provider_config(settings: dict) -> dict:
         "maxTokens": settings.get("storyGenApiMaxTokens"),
         # claude_cli 模式下的手动覆盖路径，None = 走 _find_claude_candidates 自动检测。
         "cliPath": settings.get("storyGenCliPath"),
+        "prompt": settings.get("storyGenPrompt"),
+        "template": settings.get("storyGenTemplate") or "vertical_short_drama",
+        "arkBaseUrl": settings.get("arkBaseUrl"),
+        "arkApiKey": settings.get("arkApiKey"),
+        "arkModel": settings.get("arkTextModel"),
     }
 
 
@@ -261,6 +318,8 @@ def _run_story_generation(
             content_type=content_type,
             custom_style_hints=custom_style_hints,
             custom_content_type_hints=custom_content_type_hints,
+            custom_prompt=(provider_config or {}).get("prompt"),
+            template_key=(provider_config or {}).get("template", "vertical_short_drama"),
             provider_config=provider_config,
         )
 

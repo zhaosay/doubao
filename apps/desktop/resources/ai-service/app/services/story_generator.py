@@ -1,5 +1,5 @@
 """
-把一句话 premise 扩展成分镜脚本，支持两种生成方式(Setting.storyGenProvider)：
+把一句话 premise 扩展成分镜脚本，支持三种生成方式(Setting.storyGenProvider)：
 - claude_cli(默认)：调用本机终端的 `claude`(Claude Code CLI)。要求本机已经装好
   claude 并且能正常鉴权登录 —— ai-service 只是 subprocess 调用它，不管它用的是
   订阅登录还是 API Key。如果 `claude` 不在 PATH 上，这里会直接抛出清晰的错误，
@@ -8,7 +8,8 @@
 - api：直连一个 Anthropic Messages API 兼容的第三方中转/代理服务(填 Base URL +
   API Key + 模型名)，不依赖本机终端，Windows 上更稳，但需要用户自己有这么一个
   服务的访问凭证。
-两条路径最终都会拿到一段"应该是 JSON 数组"的文本，走同一份 _parse_scenes 解析逻辑。
+- ark：使用火山方舟 chat/completions，复用设置页里的 Ark API Key、Base URL 和文本模型。
+三条路径最终都会拿到一段"应该是 JSON 数组"的文本，走同一份 _parse_scenes 解析逻辑。
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ import time
 from pathlib import Path
 
 import requests
+
+from app.services.ark_client import ArkError, chat_completion
 
 # Windows 上 claude 是 npm 装的 .cmd shim（不是原生 PE 可执行文件），subprocess.run
 # 不带 shell=True 直接传 [command, ...] 列表调用会走 CreateProcess 硬调用那个文件，
@@ -80,6 +83,10 @@ PROMPT_TEMPLATE = """你是资深竖屏短剧分镜师。请把下面这句故�
 
 {content_type_hint}
 
+输出模板：{template_hint}
+
+补充创作要求：{custom_prompt}
+
 严格要求：
 1. 只输出一个 JSON 数组，不要 markdown 代码块（不要```），不要任何解释性文字，第一个字符必须是 [。
 2. 数组每个元素是一场戏(scene)：{{"summary": "这场戏一句话概括", "shots": [...]}}
@@ -92,6 +99,12 @@ PROMPT_TEMPLATE = """你是资深竖屏短剧分镜师。请把下面这句故�
    - characterName: 本镜头登场角色名，多个用顿号分隔，没有就是空字符串
 4. 分镜要有起承转合，不要平铺直叙。
 """
+
+STORY_TEMPLATE_HINTS = {
+    "vertical_short_drama": "标准竖屏短剧：6-10镜头，有明确的开场、冲突、转折和收束，台词简洁可拍。",
+    "service_promo": "服务宣传短剧：先展示用户痛点，再展示服务介入、关键体验和可信的行动引导，不夸大效果。",
+    "knowledge_story": "知识科普短剧：用一个具体场景引出问题，通过人物对话或旁白解释重点，结尾给出清晰结论。",
+}
 
 
 class StoryGenerationError(RuntimeError):
@@ -463,6 +476,16 @@ def generate_freeform_text(prompt: str, provider_config: dict) -> str:
     "model", "maxTokens", "cliPath"}。
     """
     provider = provider_config.get("provider", DEFAULT_STORY_GEN_PROVIDER)
+    if provider == "ark":
+        try:
+            return chat_completion(
+                api_key=provider_config["arkApiKey"],
+                prompt=prompt,
+                model=provider_config["arkModel"],
+                base_url=provider_config.get("arkBaseUrl") or "https://ark.cn-beijing.volces.com/api/plan/v3",
+            )
+        except ArkError as exc:
+            raise StoryGenerationError(f"火山方舟文本生成失败：{exc}") from exc
     if provider == "api":
         return call_anthropic_api(
             prompt,
@@ -482,6 +505,18 @@ def _attempt_generate(prompt: str, provider_config: dict) -> list[dict]:
     (Setting.storyGenCliPath，用户手动指定的 CLI 路径，覆盖自动检测)。
     """
     provider = provider_config.get("provider", DEFAULT_STORY_GEN_PROVIDER)
+    if provider == "ark":
+        try:
+            content = chat_completion(
+                api_key=provider_config["arkApiKey"],
+                prompt=prompt,
+                model=provider_config["arkModel"],
+                base_url=provider_config.get("arkBaseUrl") or "https://ark.cn-beijing.volces.com/api/plan/v3",
+                timeout_sec=API_TIMEOUT_SEC,
+            )
+        except ArkError as exc:
+            raise StoryGenerationError(f"火山方舟剧本生成失败：{exc}") from exc
+        return _parse_scenes(content, "火山方舟")
     if provider == "api":
         content = call_anthropic_api(
             prompt,
@@ -516,6 +551,8 @@ def generate_story_scenes(
     content_type: str = DEFAULT_CONTENT_TYPE,
     custom_style_hints: dict | None = None,
     custom_content_type_hints: dict | None = None,
+    custom_prompt: str | None = None,
+    template_key: str = "vertical_short_drama",
     provider_config: dict | None = None,
 ) -> list[dict]:
     """custom_style_hints / custom_content_type_hints 是设置页里存的自定义提示词
@@ -539,6 +576,9 @@ def generate_story_scenes(
             raise StoryGenerationError(
                 f"第三方 API 方式缺少配置项：{'、'.join(missing)}，请先在设置页填完整。"
             )
+    elif provider == "ark":
+        if not provider_config.get("arkApiKey") or not provider_config.get("arkModel"):
+            raise StoryGenerationError("火山方舟生成剧本缺少 API Key 或文本模型 ID，请先在设置页配置")
     elif not _claude_command(provider_config.get("cliPath")):
         raise StoryGenerationError(missing_claude_message(provider_config.get("cliPath")))
 
@@ -551,7 +591,14 @@ def generate_story_scenes(
         content_type_hint = custom_content_type_hints[content_type]
     else:
         content_type_hint = CONTENT_TYPE_HINTS.get(content_type, CONTENT_TYPE_HINTS[DEFAULT_CONTENT_TYPE])
-    prompt = PROMPT_TEMPLATE.format(premise=premise, style_hint=style_hint, content_type_hint=content_type_hint)
+    template_hint = STORY_TEMPLATE_HINTS.get(template_key, STORY_TEMPLATE_HINTS["vertical_short_drama"])
+    prompt = PROMPT_TEMPLATE.format(
+        premise=premise,
+        style_hint=style_hint,
+        content_type_hint=content_type_hint,
+        template_hint=template_hint,
+        custom_prompt=(custom_prompt or "").strip() or "无额外要求，按输出模板执行。",
+    )
 
     last_exc: StoryGenerationError | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
