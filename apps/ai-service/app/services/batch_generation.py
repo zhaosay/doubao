@@ -92,7 +92,9 @@ def generate_all_shot_assets(story_id: str, kind: str) -> None:
         jobs = [(shot_id, *_prepare_running_asset(conn, shot_id, kind)) for shot_id in pending_ids]
 
     body = GenerateAssetBody()
-    with ThreadPoolExecutor(max_workers=_BATCH_CONCURRENCY) as ex:
+    # 视频平台的 429 限流比生图严格得多；视频按顺序提交，图片/配音仍保持 3 路并发。
+    max_workers = 1 if kind == "video" else _BATCH_CONCURRENCY
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [
             ex.submit(_run_generation, shot_id, kind, asset_id, task_id, body)
             for shot_id, asset_id, task_id in jobs

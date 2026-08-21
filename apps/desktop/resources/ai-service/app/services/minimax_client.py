@@ -35,7 +35,7 @@ CREATE_TASK_TIMEOUT_SEC = 300
 POLL_INTERVAL_SEC = 5
 POLL_MAX_WAIT_SEC = 20 * 60
 
-MAX_RETRY_ATTEMPTS = 3
+MAX_RETRY_ATTEMPTS = 4
 RETRY_BACKOFF_BASE_SEC = 5
 
 # OaiErrorDetail.type 里明确"临时性、值得重试"的几种：限流/欠费额度类波动/服务端错误。
@@ -44,10 +44,18 @@ _RETRYABLE_ERROR_TYPES = {"rate_limit_error", "server_error", "overloaded_error"
 
 
 class MiniMaxError(RuntimeError):
-    def __init__(self, message: str, *, status_code: Optional[int] = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        retryable: bool = False,
+        retry_after_sec: float | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+        self.retry_after_sec = retry_after_sec
 
 
 def _raise_minimax_error(action: str, resp: "requests.Response") -> None:
@@ -62,7 +70,21 @@ def _raise_minimax_error(action: str, resp: "requests.Response") -> None:
     except ValueError:
         pass
     retryable = error_type in _RETRYABLE_ERROR_TYPES if error_type else status == 429 or status >= 500
-    raise MiniMaxError(f"{action}失败 HTTP {status}: {message}", status_code=status, retryable=retryable)
+    retry_after_sec = None
+    hint = ""
+    if status == 429:
+        try:
+            retry_after_sec = max(0.0, float(resp.headers.get("Retry-After", "")))
+        except ValueError:
+            pass
+        wait_hint = f"，服务端要求约等待 {retry_after_sec:g} 秒" if retry_after_sec else ""
+        hint = f"（提示：请求过于频繁，MiniMax 正在限流{wait_hint}。请不要连续重复点击；批量视频会自动排队。）"
+    raise MiniMaxError(
+        f"{action}失败 HTTP {status}: {message}{hint}",
+        status_code=status,
+        retryable=retryable,
+        retry_after_sec=retry_after_sec,
+    )
 
 
 def _with_retry(action: str, fn):
@@ -82,6 +104,8 @@ def _with_retry(action: str, fn):
             if attempt == MAX_RETRY_ATTEMPTS:
                 raise last_exc from exc
         delay = RETRY_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
+        if isinstance(last_exc, MiniMaxError) and last_exc.retry_after_sec is not None:
+            delay = max(delay, min(last_exc.retry_after_sec, 300))
         time.sleep(delay)
     if last_exc:
         raise last_exc

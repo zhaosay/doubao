@@ -78,7 +78,7 @@ POLL_MAX_WAIT_SEC = 20 * 60  # PIPELINE.md: 前台死等最长20分钟
 
 # 失败自动重试参数：只对"可能是临时性"的错误重试，认证/参数类错误重试没有意义，
 # 只会让用户多等几十秒看到同一个错误，所以必须先分类再决定要不要重试。
-MAX_RETRY_ATTEMPTS = 3  # 含首次尝试，即最多重试 2 次
+MAX_RETRY_ATTEMPTS = 4  # 含首次尝试，即最多重试 3 次
 RETRY_BACKOFF_BASE_SEC = 5  # 指数退避：5s / 10s
 
 # Seedance 配额打满(403 quota)时按顺序尝试的降级模型；只在"配额不足"这一种错误上做，
@@ -92,10 +92,18 @@ class ArkError(RuntimeError):
     也方便调用方判断要不要自动重试/降级。
     """
 
-    def __init__(self, message: str, *, status_code: Optional[int] = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        retryable: bool = False,
+        retry_after_sec: float | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+        self.retry_after_sec = retry_after_sec
         self.is_quota_error = status_code == 403
 
 
@@ -111,6 +119,14 @@ def _raise_ark_error(action: str, resp: "requests.Response") -> None:
     text = resp.text
     status = resp.status_code
     hint = ""
+    retry_after_sec = None
+    if status == 429:
+        try:
+            retry_after_sec = max(0.0, float(resp.headers.get("Retry-After", "")))
+        except ValueError:
+            pass
+        wait_hint = f"，服务端要求约等待 {retry_after_sec:g} 秒" if retry_after_sec else ""
+        hint = f"\n（提示：请求过于频繁，模型平台正在限流{wait_hint}。请不要连续重复点击；批量视频会自动排队。）"
     is_quota = status == 403 and "quota" in text.lower()
     if is_quota:
         hint = (
@@ -119,7 +135,12 @@ def _raise_ark_error(action: str, resp: "requests.Response") -> None:
             "拿响应里的 Request id 去 Ark 控制台查一下三层剩余额度。）"
         )
     retryable = is_quota or status == 429 or status >= 500
-    raise ArkError(f"{action}失败 HTTP {status}: {text}{hint}", status_code=status, retryable=retryable)
+    raise ArkError(
+        f"{action}失败 HTTP {status}: {text}{hint}",
+        status_code=status,
+        retryable=retryable,
+        retry_after_sec=retry_after_sec,
+    )
 
 
 def _with_retry(action: str, fn):
@@ -139,6 +160,8 @@ def _with_retry(action: str, fn):
             if attempt == MAX_RETRY_ATTEMPTS:
                 raise last_exc from exc
         delay = RETRY_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
+        if isinstance(last_exc, ArkError) and last_exc.retry_after_sec is not None:
+            delay = max(delay, min(last_exc.retry_after_sec, 300))
         time.sleep(delay)
     if last_exc:
         raise last_exc
