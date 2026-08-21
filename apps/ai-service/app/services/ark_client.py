@@ -134,9 +134,7 @@ def _with_retry(action: str, fn):
                 raise
         except requests.exceptions.RequestException as exc:
             # 网络层错误(超时/连接重置)本身就是临时性的，也纳入重试
-            hint = ""
-            if isinstance(exc, requests.exceptions.SSLError):
-                hint = "（已尝试绕过系统代理直连且仍失败，请检查 Windows 代理、杀毒软件 HTTPS 扫描或网络防火墙。）"
+            hint = _network_error_hint(exc)
             last_exc = ArkError(f"{action}网络请求异常: {exc}{hint}", retryable=True)
             if attempt == MAX_RETRY_ATTEMPTS:
                 raise last_exc from exc
@@ -153,20 +151,26 @@ def _headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
+def _network_error_hint(exc: Exception) -> str:
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "（已尝试绕过系统代理直连且仍失败，请检查 Windows 代理、杀毒软件 HTTPS 扫描或网络防火墙。）"
+    return ""
+
+
 def _ark_request(method: str, url: str, **kwargs: Any) -> requests.Response:
-    """先按用户的网络设置访问；TLS 握手被错误代理中断时，再安全地直连一次。
+    """先按用户的网络设置访问；连接/TLS 被错误代理中断时，再安全地直连一次。
 
     不会关闭证书验证。仅忽略代理环境变量，避免某些 Windows 代理/安全软件对
     ark.cn-beijing.volces.com 的 HTTPS 检查在 ClientHello 阶段直接断开连接。
     """
     try:
         return requests.request(method, url, **kwargs)
-    except requests.exceptions.SSLError as proxy_error:
+    except requests.exceptions.ConnectionError as proxy_error:
         with requests.Session() as direct_session:
             direct_session.trust_env = False
             try:
                 return direct_session.request(method, url, **kwargs)
-            except requests.exceptions.SSLError as direct_error:
+            except requests.exceptions.ConnectionError as direct_error:
                 raise direct_error from proxy_error
 
 
@@ -184,7 +188,17 @@ MAX_REFERENCE_BYTES_BEFORE_COMPRESS = 3 * 1024 * 1024  # 3MB
 
 def _file_to_data_uri(path: str) -> str:
     p = Path(path)
-    raw = p.read_bytes()
+    if not p.is_file():
+        raise ArkError(
+            f"参考图不存在或无法读取: {p}。Windows 上请确认 OneDrive 文件已选择“始终保留在此设备上”，"
+            "并且没有被杀毒软件或其他程序占用。"
+        )
+    try:
+        raw = p.read_bytes()
+    except OSError as exc:
+        raise ArkError(f"读取参考图失败: {p}: {exc}") from exc
+    if not raw:
+        raise ArkError(f"参考图是空文件: {p}")
     mime = mimetypes.guess_type(p.name)[0] or "image/png"
 
     if not _PIL_AVAILABLE:
@@ -423,7 +437,23 @@ def poll_video_task(*, api_key: str, task_id: str, base_url: str = ARK_BASE_URL)
 def download_to_file(url: str, dest_path: str) -> None:
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    resp = requests.get(url, timeout=120)
-    if resp.status_code != 200:
-        raise ArkError(f"下载生成产物失败 HTTP {resp.status_code}: {url}")
-    dest.write_bytes(resp.content)
+    temporary = dest.with_name(f"{dest.name}.part")
+
+    def _download() -> None:
+        temporary.unlink(missing_ok=True)
+        try:
+            with _ark_request("GET", url, stream=True, timeout=(20, 180)) as resp:
+                if resp.status_code != 200:
+                    _raise_ark_error("下载生成产物", resp)
+                with temporary.open("wb") as output:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            output.write(chunk)
+            if temporary.stat().st_size == 0:
+                raise ArkError("下载生成产物失败：服务端返回了空文件", retryable=True)
+            temporary.replace(dest)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    _with_retry("下载生成产物", _download)

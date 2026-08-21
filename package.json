@@ -1,7 +1,7 @@
 {
   "name": "ai-manju-mvp",
   "private": true,
-  "version": "1.0.29",
+  "version": "1.0.30",
   "workspaces": [
     "apps/desktop",
     "packages/*"

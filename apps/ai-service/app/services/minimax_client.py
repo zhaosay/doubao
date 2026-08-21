@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -75,7 +75,10 @@ def _with_retry(action: str, fn):
             if not exc.retryable or attempt == MAX_RETRY_ATTEMPTS:
                 raise
         except requests.exceptions.RequestException as exc:
-            last_exc = MiniMaxError(f"{action}网络请求异常: {exc}", retryable=True)
+            hint = ""
+            if isinstance(exc, requests.exceptions.ConnectionError):
+                hint = "（已尝试绕过系统代理直连且仍失败，请检查 Windows 代理、杀毒软件 HTTPS 扫描或网络防火墙。）"
+            last_exc = MiniMaxError(f"{action}网络请求异常: {exc}{hint}", retryable=True)
             if attempt == MAX_RETRY_ATTEMPTS:
                 raise last_exc from exc
         delay = RETRY_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
@@ -89,6 +92,19 @@ def _headers(api_key: str) -> dict:
     if not api_key:
         raise MiniMaxError("未配置 MiniMax API Key，请先在设置页填写")
     return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _minimax_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """网络环境异常时再走一次不继承代理的直连，但始终保留 TLS 证书校验。"""
+    try:
+        return requests.request(method, url, **kwargs)
+    except requests.exceptions.ConnectionError as proxy_error:
+        with requests.Session() as direct_session:
+            direct_session.trust_env = False
+            try:
+                return direct_session.request(method, url, **kwargs)
+            except requests.exceptions.ConnectionError as direct_error:
+                raise direct_error from proxy_error
 
 
 def create_video_task(
@@ -117,13 +133,14 @@ def create_video_task(
     }
 
     def _submit() -> str:
-        resp = requests.post(
+        resp = _minimax_request(
+            "POST",
             f"{base_url.rstrip('/')}/v2/video_generation",
             headers=_headers(api_key),
             json=body,
             timeout=CREATE_TASK_TIMEOUT_SEC,
         )
-        if resp.status_code != 200:
+        if not 200 <= resp.status_code < 300:
             _raise_minimax_error("MiniMax 创建视频任务", resp)
         data = resp.json()
         task = data.get("task") or {}
@@ -143,7 +160,8 @@ def poll_video_task(*, api_key: str, task_id: str, base_url: str = MINIMAX_BASE_
 
     while time.time() < deadline:
         try:
-            resp = requests.get(
+            resp = _minimax_request(
+                "GET",
                 f"{base_url.rstrip('/')}/v2/query/video_generation/{task_id}", headers=headers, timeout=30
             )
         except requests.exceptions.RequestException as exc:
@@ -153,7 +171,7 @@ def poll_video_task(*, api_key: str, task_id: str, base_url: str = MINIMAX_BASE_
             time.sleep(POLL_INTERVAL_SEC)
             continue
 
-        if resp.status_code != 200:
+        if not 200 <= resp.status_code < 300:
             consecutive_poll_errors += 1
             if consecutive_poll_errors >= 5:
                 raise MiniMaxError(f"查询 MiniMax 任务失败 HTTP {resp.status_code}: {resp.text}")
@@ -183,7 +201,23 @@ def poll_video_task(*, api_key: str, task_id: str, base_url: str = MINIMAX_BASE_
 def download_to_file(url: str, dest_path: str) -> None:
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    resp = requests.get(url, timeout=120)
-    if resp.status_code != 200:
-        raise MiniMaxError(f"下载生成产物失败 HTTP {resp.status_code}: {url}")
-    dest.write_bytes(resp.content)
+    temporary = dest.with_name(f"{dest.name}.part")
+
+    def _download() -> None:
+        temporary.unlink(missing_ok=True)
+        try:
+            with _minimax_request("GET", url, stream=True, timeout=(20, 180)) as resp:
+                if resp.status_code != 200:
+                    _raise_minimax_error("下载生成产物", resp)
+                with temporary.open("wb") as output:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            output.write(chunk)
+            if temporary.stat().st_size == 0:
+                raise MiniMaxError("下载生成产物失败：服务端返回了空文件", retryable=True)
+            temporary.replace(dest)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    _with_retry("下载生成产物", _download)
